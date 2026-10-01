@@ -1,9 +1,10 @@
 # BrandX — Clothes Shop CRM / POS
 
-An existing retail CRM/POS being incrementally migrated to a multi-store platform.
-**Multi-store enforcement and Platform Admin are not implemented yet.** Do not
-onboard independent stores until the security acceptance gates pass.
-See [ARCHITECTURE_AUDIT.md](./ARCHITECTURE_AUDIT.md) for findings and agreed decisions.
+An existing retail CRM/POS now migrated to a **multi-store platform on
+PostgreSQL 17**. Verified with 145 backend tests, a production frontend build and
+a 24-check live multi-store smoke test. Production cautions (Django version,
+database cutover approval) are listed in [IMPLEMENTATION_REPORT.md](./IMPLEMENTATION_REPORT.md).
+See [ARCHITECTURE_AUDIT.md](./ARCHITECTURE_AUDIT.md) for findings and decisions.
 
 - **Backend**: Django 5 + Django REST Framework + PostgreSQL 17 (SQLite supported for tests; MySQL retained temporarily for source-data transfer)
 - **Frontend**: Angular 19 (Standalone + Signals + Angular Material)
@@ -13,10 +14,17 @@ See [ARCHITECTURE_AUDIT.md](./ARCHITECTURE_AUDIT.md) for findings and agreed dec
 
 ## Features
 
-- **PIN login** — employees sign in with a numeric PIN (no username/password UI).
-  PINs are hashed, attempts are counted and repeated failures trigger a temporary
-  lockout. Employees are created only by the owner.
-- **Roles** — `owner`, `manager`, `cashier`, enforced on the API.
+- **Store-aware multi-tenancy** — `platform_admin` (global) → `store` →
+  `owner` / `manager` / `cashier`. Every API queryset, related ID, export and
+  statistic is scoped to the authenticated store; cross-store access returns 404/403.
+- **Login** — store staff use `/store/<CODE>/login` + PIN; the platform admin uses
+  `/platform/login`. Deactivating a store blocks logins *and* existing JWT/refresh tokens.
+- **Platform Admin panel** (`/platform`) — store list/detail, create store + first
+  owner transactionally, manage owner PIN, activate/deactivate stores.
+- **Products** — simple product mode, size × colour stock matrix, inline category
+  creation, per-store barcode uniqueness and product duplication.
+- **POS** — search/scan, cash/card/mixed with change, atomic checkout with row
+  locks (PostgreSQL-safe), store-branded 80 mm PDF receipt.
 - **Products** — name, category, barcode (scanner or manual, unique,
   auto-generatable), cost & selling price, stock, size, colour, description,
   photo, active flag. Variants (colour × size) with their own barcode and stock.
@@ -51,14 +59,15 @@ See [ARCHITECTURE_AUDIT.md](./ARCHITECTURE_AUDIT.md) for findings and agreed dec
 brandx/
 ├── backend/                     # Django REST API
 │   └── apps/
+│       ├── stores/             # Store model, settings, counters, platform API
 │       ├── authentication/      # PIN login, users, roles, permissions
 │       ├── products/            # categories, products, variants, colours, sizes
 │       ├── inventory/           # receipts, stock movements, valuation
 │       ├── sales/               # POS checkout, receipts, returns, dashboard
 │       ├── finance/             # income / expense
 │       ├── reports/             # Excel / CSV exports
-│       ├── audit/               # audit log
-│       ├── customers/           # simple customer records
+│       ├── audit/               # audit log (store-scoped)
+│       ├── customers/           # per-store customer records
 │       ├── vendors/             # (installed, no UI)
 │       └── ai_analysis/         # (installed, no UI)
 ├── frontend/                    # Angular 19 web app
@@ -172,6 +181,12 @@ apply current minor releases.
    writes, switching back to the stale MySQL source would lose those writes:
    reconciliation or a new migration is required, not a blind rollback.
 
+This procedure was **rehearsed on the development database on 2026-10-01**
+(`backups/brandx-mysql-before-transfer.sql`, archive `brandx-mysql.transfer.json`,
+97 records migrated and verified). MySQL remains untouched as the rollback source
+and the archive is git-ignored — delete it after sign-off because it contains
+password/PIN hashes.
+
 For large databases this archive implementation holds records in memory; rehearse
 with a representative copy before scheduling production cutover. No live source
 backup/transfer/cutover has been executed by this update.
@@ -253,22 +268,29 @@ Runs at http://localhost:4200 (proxies `/api` to the backend).
 ## Tests
 
 ```bash
-# Backend unit tests (SQLite, no MySQL needed)
+# Backend unit tests (SQLite, no database server needed)
 cd brandx
 docker compose run --rm --no-deps --entrypoint sh \
   -v "$(pwd)/backend:/app" \
   -e DB_ENGINE=django.db.backends.sqlite3 -e DB_NAME=:memory: \
   backend -c "python manage.py test apps"
 
-# End-to-end (stack must be running)
-python3 verify_e2e.py
+# Full suite on real PostgreSQL (ephemeral database, no production volumes)
+docker compose -p brandx-verification -f docker-compose.test.yml up \
+  --abort-on-container-exit --exit-code-from tests
+
+# Live multi-store smoke test (stack must be running)
+python3 verify_multistore.py
 ```
 
-Current verification: **120 tests passed on PostgreSQL 17.11 and SQLite**
-(2026-10-01), including 5 transfer-integrity/rollback tests. Existing migrations
-apply on PostgreSQL; `makemigrations --check --dry-run` reports no changes.
-The earlier single-store E2E run passed 46 checks, but has **not** been rerun for
-this architecture update. Multi-store security tests are pending.
+Current verification (2026-10-01): **145 tests pass on PostgreSQL 17.11 and on
+SQLite**, `makemigrations --check --dry-run` reports no changes, the production
+frontend build succeeds, and `python3 verify_multistore.py` passes **24/24** live
+checks against the running stack. A real MySQL → PostgreSQL data transfer was
+rehearsed on the development database (mysqldump backup → MySQL Store backfill →
+export/import/verify → 97 records migrated). The legacy single-store
+`verify_e2e.py` script predates store-link login and is superseded by
+`verify_multistore.py`.
 
 ---
 

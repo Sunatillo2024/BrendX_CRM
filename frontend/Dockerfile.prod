@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+
+# BrandX frontend - production image (Angular build stage + Nginx runtime).
+# Build context: ./frontend   (see deploy/docker-compose.prod.yml)
+
+# ---------------------------------------------------------------------------
+# Stage 1: build the Angular application (production configuration).
+# ---------------------------------------------------------------------------
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+# Install dependencies first so this layer is cached between source changes.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build:prod
+
+# ---------------------------------------------------------------------------
+# Stage 2: Nginx runtime that serves the SPA and proxies /api to Django.
+# ---------------------------------------------------------------------------
+FROM nginx:1.27-alpine AS runtime
+
+# Replace the stock server block with the BrandX one.
+RUN rm -f /etc/nginx/conf.d/default.conf
+COPY nginx.prod.conf /etc/nginx/conf.d/brandx.conf
+
+# Angular 19 application builder outputs the browser bundle here.
+COPY --from=build /app/dist/brandx-frontend/browser /usr/share/nginx/html
+
+# Validate the Nginx config at build time. The `backend` upstream name is only
+# resolvable at runtime (Docker DNS), so it is swapped for 127.0.0.1 for the
+# syntax check only; the shipped config keeps `backend:8000`.
+RUN cp /etc/nginx/conf.d/brandx.conf /tmp/brandx.conf \
+    && sed 's/server backend:8000;/server 127.0.0.1:8000;/' /tmp/brandx.conf \
+       > /etc/nginx/conf.d/brandx.conf \
+    && nginx -t \
+    && cp /tmp/brandx.conf /etc/nginx/conf.d/brandx.conf \
+    && rm -f /tmp/brandx.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

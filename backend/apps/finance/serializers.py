@@ -5,6 +5,11 @@ from .models import FinanceEntry
 
 
 class FinanceEntrySerializer(serializers.ModelSerializer):
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('Amount must be positive.')
+        return value
+
     created_by_name = serializers.CharField(source='created_by.display_name', read_only=True,
                                             default=None)
 

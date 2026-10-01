@@ -2,6 +2,12 @@
 
 ## Status and agreed decisions
 
+> **Implemented & verified 2026-10-01** (see IMPLEMENTATION_REPORT.md): Store
+> schema + BrandX backfill, PostgreSQL primary, platform panel, store-link login,
+> tenant scoping, product matrix/simple flows, statistics/refund corrections,
+> 145 tests (PG + SQLite), 24/24 live smoke checks and a MySQL → PostgreSQL
+> cutover rehearsal. The findings below are kept as the audit record.
+
 This is an incremental migration, not a rewrite. The deployed application remains
 single-store until tenant enforcement and its tests are complete. Do not expose it
 to multiple customers in the meantime.

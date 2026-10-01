@@ -190,6 +190,13 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken', 'x-requested-with',
 ]
 
+# Required by Django for the admin (session/CSRF) when served from a different
+# scheme/host than the container, e.g. https://pos.example.com behind Nginx.
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:4200,http://localhost:8000',
+).split(',')
+
 # AI Integration (Groq - Free)
 GROQ_API_KEY = config('GROQ_API_KEY', default='')
 AI_MODEL = 'llama3-8b-8192'
@@ -217,3 +224,27 @@ CACHES = {
         'LOCATION': 'brandx',
     }
 }
+
+# ---------------------------------------------------------------------------
+# Reverse-proxy / production hardening.
+# All values below keep the current behaviour by default and are enabled from
+# the environment once the stack is served over HTTPS (see deploy/.env.prod).
+# ---------------------------------------------------------------------------
+# Trust the edge proxy's forwarded scheme so request.is_secure() and absolute
+# URIs are correct behind Nginx / Caddy.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Redirect http -> https. Keep disabled while the stack is reachable over plain
+# HTTP (e.g. first boot by IP); the edge proxy normally performs this redirect.
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
+
+# Secure-cookie flags. Enable together with HTTPS so the admin session cookie
+# is never sent in clear text.
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=False, cast=bool)
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=False, cast=bool)
+
+# HTTP Strict Transport Security. Leave at 0 until HTTPS is confirmed working.
+SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=0, cast=int)
+
+# Always safe (do not depend on TLS).
+SECURE_CONTENT_TYPE_NOSNIFF = True

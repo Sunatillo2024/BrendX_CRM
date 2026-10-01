@@ -13,6 +13,12 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
                   'low_stock_threshold', 'default_language', 'timezone']
         read_only_fields = ['id', 'code', 'is_active']
 
+    def validate_currency_code(self, value):
+        value = value.strip().upper()
+        if not re.fullmatch(r'[A-Z]{3}', value):
+            raise serializers.ValidationError('Use a three-letter currency code.')
+        return value
+
     def validate_timezone(self, value):
         try:
             ZoneInfo(value)
@@ -41,6 +47,10 @@ class PlatformStoreSerializer(StoreSettingsSerializer):
         if qs.exists():
             raise serializers.ValidationError('Store code already exists.')
         return value
+
+    def update(self, instance, validated_data):
+        validated_data.pop('owner_language', None)
+        return super().update(instance, validated_data)
 
     def validate(self, attrs):
         if not self.instance and (not attrs.get('owner_name', '').strip() or not attrs.get('owner_pin')):

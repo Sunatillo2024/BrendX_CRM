@@ -2,9 +2,12 @@
 
 ## Architecture update checkpoint — 2026-10-01
 
-**Work in progress: phases 1–2 audited; phase 3 infrastructure/tooling tested.
-Live data cutover and phases 4–15 are not complete.** Historical sections below
-refer to the earlier single-store implementation, not a completed multi-store platform.
+**Status (2026-10-01): implemented and verified on PostgreSQL 17.** Evidence:
+145 backend tests (PG + SQLite), clean migration-drift check, production Angular
+build, a 24/24 live multi-store smoke test, and a real MySQL → PostgreSQL data
+cutover rehearsal on the development database. Remaining production cautions are
+listed under *Remaining Issues*. Sections further below describe the original
+single-store starting point.
 
 ### PostgreSQL Migration
 
@@ -22,78 +25,134 @@ refer to the earlier single-store implementation, not a completed multi-store pl
   and archive overwrites are refused. Auth permissions use natural keys.
 - README documents backup, frozen writes, protected archives, media, schema-version
   matching, token invalidation, operator cutover and rollback limitations.
-- No actual customer-data migration/cutover has been performed.
+- MySQL source/media volumes were **not** deleted: MySQL stays available under
+  the `legacy-mysql` profile as the rollback source.
+- **Cutover rehearsed on the development database (2026-10-01):** native
+  `mysqldump` backup (`backups/brandx-mysql-before-transfer.sql`, 31 tables),
+  Store schema + BrandX backfill applied to MySQL, `transfer_database export`
+  (97 records, mode 0600), fresh PostgreSQL migrate, `import` + `verify` (all model
+  counts/digests/relationships matched), sequence reset, backend restart. Migrated:
+  1 store, 3 users, 1 product, 2 variants, 3 sales, 3 sale items, 5 stock
+  movements, 34 audit rows. No MySQL rows were deleted.
 
 ### Multi-Store Architecture
 
-Agreed: legacy data belongs to BrandX; store login uses `/store/<CODE>/login` + PIN.
-Planned shared database with tenant-root FKs, scoped child relations and store-bound
-request/service validation. **Store model, backfill and isolation are pending.**
+Implemented: shared PostgreSQL database with an explicit `store` FK on every
+tenant-root entity (users, categories, colours, sizes, products, variants, sales,
+receipts, returns, finance entries, customers, vendors, stock receipts, audit logs)
+and parent-scoped children (sale items, movements, receipt items). A data migration
+backfills all pre-existing rows into **BrandX** before NOT NULL/enforcement
+constraints are added. Store codes/barcodes/SKUs/names are unique **per store**;
+sale and receipt numbers are allocated from per-store counters locked with
+`select_for_update`. Store login uses `/store/<CODE>/login` + PIN with identical
+PINs allowed across stores.
 
 ### Platform Admin
 
-Agreed: existing `admin` becomes a global platform administrator while historical
-cashier references remain intact. Separate BrandX Owner must be provisioned.
-Dedicated `/platform` UI/API and role migration are **pending**; Django admin is
-not the planned commercial panel.
+Implemented: `platform_admin` is a global role (DB check constraint forces
+`store IS NULL`, other roles force `store IS NOT NULL`). Dedicated `/platform`
+UI + `/api/platform/*` endpoints (dashboard counts, create/edit store with first
+owner in one transaction, manage owner, activate/deactivate) are gated by
+`IsPlatformAdmin`; owners get 403. The legacy `admin` account is migrated to
+platform admin and is the only technical-Django-admin credential; store accounts
+are refused at `/admin/`.
 
 ### Owner / Manager / Cashier
 
-Existing single-store role rules remain. Target: owner manages only its store and
-employees; manager operational access without cost/profit; cashier POS and own
-sales/receipts. Store status enforcement, employee relation scoping and restricted
-technical-admin access are **pending**.
+Implemented. Owner: full store scope, employees/finance/reports/audit/store
+settings; cannot create stores, reach `/platform`, assign `platform_admin`, or
+edit/deactivate the owner. Manager: same operational scope with no cost/profit
+payloads and no audit/receipt-cost export. Cashier: POS + own sales only. Store
+deactivation blocks logins **and** already-issued JWT/refresh tokens; reactivation
+restores access without touching data. Employee `store_id` always comes from the
+authenticated owner (client-supplied `store` is ignored).
 
 ### Product Workflow
 
-Audit completed: nullable size/color already permits simple variants, but creation
-is manual. Matrix, simple-product mode, quick category, barcode namespace enforcement
-and duplication are **pending**. Direct stock edits need audited movement writes.
+Implemented: **simple product mode** (no colour/size, one stock number),
+**size × colour stock matrix** that creates the required variants in one atomic,
+store-locked request, **inline category creation** without leaving the form,
+**barcode generate/duplicate-check** with per-store uniqueness and the Russian
+error message from the brief, and **product duplication** (`/products/new?duplicate=<id>`).
+Every stock write goes through `change_stock`, so products now always produce a
+`StockMovement`; non-owners cannot write `cost_price`/`base_cost_price`.
 
 ### Statistics
 
-Audit found fully-refunded-sale double subtraction, undiscounted refunds,
-concurrent/duplicate return risks, gross payment totals after refunds, top-product
-return omissions and supporting dashboard panels ignoring date range.
-Historical SaleItem.unit_cost snapshots already exist and must be preserved.
-Target formulas: Revenue = sale totals - period refunds; COGS = historical sold
-cost - period returned cost; Gross Profit = Revenue - COGS; Net Profit = Gross
-Profit - Expenses (other income shown separately). Average receipt basis/refund
-allocation must be documented with the implemented service/tests. **Corrections
-and chart improvements have not yet been implemented.**
+Implemented and covered by tests:
+
+- Revenue = sale totals − period refunds (fully refunded sales are no longer
+  double-subtracted); returns are excluded from cancelled sales.
+- COGS = historical `SaleItem.unit_cost` (never current purchase price) − returned
+  cost; changing `Product.base_cost_price` does not rewrite past profit.
+- Gross Profit = Revenue − COGS; **Net Profit = Gross Profit − Expenses**, with
+  other income reported separately (it no longer inflates net profit).
+- Average receipt = net revenue ÷ sale count; cash/card split is reduced by the
+  refund allocation (each `SaleReturn` stores its cash/card parts).
+- Refunds honour line + sale-wide discounts, allocate the paid amount in cents
+  (last line absorbs rounding), run under row locks, reject duplicate/over refunds
+  and cap at the sale total.
+- Units sold and top products subtract returns and use stable product IDs.
+- Chart granularity: hourly for 1 day, daily ≤ 90 days, weekly beyond, with all
+  buckets filled; refunds shown as negative revenue. Dashboard KPIs, recent sales
+  and expenses share the selected date range (custom ranges validated server-side).
 
 ### Security
 
-Global querysets and related-ID lookups are unsafe for multiple customers today.
-Fail-closed store scoping, deactivated-store JWT/refresh checks and mandatory
-cross-store read/write/export/statistics tests are **pending**. Do not onboard
-multiple independent stores with this checkpoint.
+Implemented: every list/detail/custom action resolves querysets through
+`apps/common/tenancy.py` (fail-closed — no store context means deny), writable
+related fields are re-scoped inside serializers (a client cannot post another
+store's product/variant/vendor/customer ID), services validate tenant inputs,
+exports and statistics take an explicit store, AI analysis is owner-only and
+store-bound, and audit rows carry the store. Verified by 12 two-store API tests,
+3 real-PostgreSQL concurrency tests and 24 live HTTP checks (read IDOR, write
+IDOR, cross-store POS, export leakage, stats leakage, deactivation/token revocation,
+platform authorization, old JWT).
 
 ### Tests
 
-- Baseline: 115 existing tests passed on SQLite.
-- PostgreSQL 17.11: 120 tests passed (existing suite + 5 transfer tests).
-- SQLite: 120 tests passed.
-- Transfer tests: exact data/ID/hash/cost/relationship roundtrip and new-ID allocation;
-  nonempty-target refusal; checksum rejection; unknown-model rejection; failed
-  foreign-key import rolls back all rows. Auth group/permission references included.
-- Django migration drift check: no changes detected.
-- Multi-store and concurrency tests are not implemented yet; browser/end-to-end
-  verification and a real MySQL → PostgreSQL rehearsal are pending.
+- **PostgreSQL 17.11: 145 tests OK** (24 new: multi-store isolation, platform API,
+  provisioning, deactivation, discounted/roll-back returns, receipt/store settings,
+  chart ranges, transfer integrity, legacy backfill migration, 3 concurrency tests
+  for oversell / duplicate numbering / double refund).
+- **SQLite: 145 tests OK** (the 3 PostgreSQL-only concurrency tests skip).
+- **Migration drift:** `makemigrations --check --dry-run` → no changes.
+- **Frontend:** `ng build --configuration production` succeeds in Docker.
+- **Live stack smoke:** `python3 verify_multistore.py` → **24/24 checks** against
+  the running Docker stack (web, platform login/dashboard, store+owner creation,
+  store-link login, platform 403, category/simple product/stock movement,
+  per-store barcode uniqueness, cross-store 404, POS + change, store receipt PDF,
+  export scoping, dashboards, deactivation/reactivation, admin PIN page).
+- **Data cutover rehearsal:** mysqldump backup → MySQL migrate + BrandX backfill →
+  export (97 records) → fresh PostgreSQL migrate → import + verify → all counts,
+  content digests and relationships matched.
 
 ### Removed Code
 
-No business functionality removed. Replaced MySQL-only readiness logic and
-hardcoded Django DB credentials. Temporary mysqlclient dependency retained for
-source migration; remove only after verified transfer and reference checks.
+No business functionality removed. Replaced MySQL-only startup readiness and
+hardcoded Django DB credentials; `create_admin` no longer resets credentials on
+every boot and now provisions a platform admin only when explicitly bootstrapped.
+The legacy single-store `verify_e2e.py` script no longer matches the store-link
+login API — `verify_multistore.py` supersedes it. Temporary `mysqlclient`
+dependency is retained only for source-database access; remove it after the final
+source cutover once no MySQL connection remains (reference-check first).
 
 ### Remaining Issues
 
-Complete phases 4–15 and live migration rehearsal/cutover. Keep production backups
-and obtain explicit operational approval before freezing or switching an existing
-installation. Django 5.0.4 is unsupported: a tested Django LTS dependency upgrade
-is necessary before claiming production readiness. Transfer currently holds the
-archive in memory; assess large-data workloads. See ARCHITECTURE_AUDIT.md.
+- **Django 5.0.4 is no longer supported** (October 2026). Upgrade to a tested
+  Django LTS release and re-run the full suite before calling this production-ready.
+- Run this full verification against a **copy of real production data**, not just
+  the development database; rehearse rollback (MySQL is preserved but stale once
+  PostgreSQL accepts writes).
+- Rotate `SECRET_KEY` at controlled cutover to invalidate pre-migration JWTs, and
+  delete/retire the transfer archive (it contains password/PIN hashes) after sign-off.
+- Archives are held in memory — assess very large databases before scheduling the
+  production window. Media files are transferred separately (not part of the archive).
+- `django_filters`/`SearchFilter` page-size parameters and the old English strings
+  in a few backend messages were not audited for copy quality; RU/UZ UI copy review
+  remains manual. Browser-level (Playwright/Selenium) coverage is not automated.
+- Per-store `Store.default_language` is not yet applied automatically at store
+  creation time for employees (owner chooses language explicitly).
 
 ---
 

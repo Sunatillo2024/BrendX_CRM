@@ -1,4 +1,4 @@
-"""Create (or update) the owner account. Idempotent - safe to run on every start."""
+"""Create the single global platform administrator. Idempotent; never resets existing credentials."""
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -6,7 +6,7 @@ from apps.authentication.models import User
 
 
 class Command(BaseCommand):
-    help = 'Create or update the owner account (used on startup in Docker).'
+    help = 'Create the platform administrator account (explicit bootstrap only).'
 
     def add_arguments(self, parser):
         parser.add_argument('--username', default='admin')
@@ -21,25 +21,29 @@ class Command(BaseCommand):
         pin = options['pin']
         email = options['email']
 
-        user, created = User.objects.get_or_create(
-            username=username,
-            defaults={'email': email},
-        )
-        if not created:
+        if User.objects.filter(username=username).exists():
+            # Never reset credentials on restart: that would silently hand over
+            # the account to whoever controls the environment variables.
             self.stdout.write('Account already exists; credentials unchanged.')
             return
-        user.email = email
-        user.role = User.ROLE_PLATFORM_ADMIN
-        user.is_staff = True
-        user.is_superuser = True
-        user.is_active = True
+
+        # Create with the final role in one INSERT: the users table enforces
+        # "platform_admin must have no store" at the database level.
+        user = User(
+            username=username,
+            email=email,
+            role=User.ROLE_PLATFORM_ADMIN,
+            store=None,
+            is_staff=True,
+            is_superuser=True,
+            is_active=True,
+        )
         user.set_password(password)
         user.save()
         if pin:
             user.set_pin(pin)
             user.save(update_fields=['pin_hash', 'updated_at'])
 
-        action = 'Created' if created else 'Updated'
         self.stdout.write(self.style.SUCCESS(
-            f'{action} owner "{username}" (password and PIN set).'
+            f'Created platform admin "{username}" (password and PIN set).'
         ))

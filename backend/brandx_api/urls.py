@@ -6,6 +6,7 @@ from django.contrib.admin.exceptions import NotRegistered
 from django.urls import include, path
 
 from apps.authentication.admin_login import PinAdminLoginView
+from apps.common.health import health
 from apps.stores.views import PlatformDashboard, PlatformStoreViewSet, StoreSettingsView
 from rest_framework.routers import DefaultRouter
 platform_router = DefaultRouter()
@@ -35,6 +36,9 @@ urlpatterns = [
 
     # Language switching (used by the admin language chooser).
     path('i18n/', include('django.conf.urls.i18n')),
+
+    # Public health probe for Docker / load balancers (no auth, no store context).
+    path('api/health/', health, name='health'),
 
     path('api/platform/dashboard/', PlatformDashboard.as_view()),
     path('api/platform/', include(platform_router.urls)),

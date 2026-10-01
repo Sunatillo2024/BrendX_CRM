@@ -1,191 +1,193 @@
-﻿import { Component, OnInit, inject, signal, AfterViewInit, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MoneyPipe, TranslatePipe } from '../../core/i18n/translate.pipe';
+import { TranslationService } from '../../core/i18n/translation.service';
+import { ReportSummary } from '../../core/models/models';
 import { ApiService } from '../../core/services/api.service';
+import { AuthService } from '../../core/services/auth.service';
+
+interface ExportKind { key: string; label: string; roles: string[]; }
 
 @Component({
   selector: 'app-reports',
   standalone: true,
-  imports: [
-    CommonModule, FormsModule,
-    MatButtonModule, MatIconModule, MatFormFieldModule,
-    MatInputModule, MatProgressBarModule, MatProgressSpinnerModule,
-  ],
+  imports: [CommonModule, FormsModule, MatIconModule, TranslatePipe, MoneyPipe],
   template: `
-    <div class="page-container">
-      <div class="page-header">
-        <h1>Reports & Analytics</h1>
+    <div class="page-head">
+      <h1 class="page-title">{{ 'reports.title' | t }}</h1>
+      <div class="period-bar">
+        <input class="input" style="width:155px" type="date" [(ngModel)]="dateFrom"
+               (change)="load()">
+        <input class="input" style="width:155px" type="date" [(ngModel)]="dateTo"
+               (change)="load()">
+        <button class="period-btn" [class.active]="preset === 'month'" (click)="setMonth()">
+          {{ 'common.month' | t }}
+        </button>
+        <button class="period-btn" [class.active]="preset === 'today'" (click)="setToday()">
+          {{ 'common.today' | t }}
+        </button>
       </div>
+    </div>
 
-      @if (loading) { <mat-progress-bar mode="indeterminate" style="border-radius:4px;margin-bottom:16px" /> }
-
-      <!-- Revenue Chart Card -->
-      <div class="report-card" style="margin-bottom:24px">
-        <div class="report-card-header">
-          <div class="report-card-title">
-            <mat-icon style="color:#6366f1">bar_chart</mat-icon>
-            Monthly Revenue
+    <div class="page-body">
+      @if (summary(); as s) {
+        <div class="grid grid-4">
+          <div class="stat">
+            <div class="stat-label">{{ 'dashboard.revenue' | t }}</div>
+            <div class="stat-value accent">{{ s.operational.revenue | money }}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">{{ 'dashboard.salesCount' | t }}</div>
+            <div class="stat-value">{{ s.operational.sales_count }}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">{{ 'dashboard.unitsSold' | t }}</div>
+            <div class="stat-value">{{ s.operational.units_sold }}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">{{ 'dashboard.averageCheck' | t }}</div>
+            <div class="stat-value">{{ s.operational.average_check | money }}</div>
           </div>
         </div>
-        <canvas #monthlyChart style="width:100%;max-height:280px"></canvas>
-      </div>
 
-      <!-- Monthly stats grid -->
-      @if (monthlyData().length) {
-        <div class="month-grid" style="margin-bottom:24px">
-          @for (item of monthlyData(); track item.month) {
-            <div class="month-tile">
-              <div class="month-name">{{ item.month_label || item.month }}</div>
-              <div class="month-total">{{ item.total | currency:'USD':'symbol':'1.0-0' }}</div>
-              <div class="month-count">{{ item.count }} sales</div>
+        @if (s.financial; as fin) {
+          <div class="card" style="margin-top:16px">
+            <h3 class="card-title">{{ 'reports.financial' | t }}</h3>
+            <div class="grid grid-3">
+              <div class="stat">
+                <div class="stat-label">{{ 'profit.cost' | t }}</div>
+                <div class="stat-value">{{ fin.cost_of_goods | money }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">{{ 'profit.grossProfit' | t }}</div>
+                <div class="stat-value positive">{{ fin.gross_profit | money }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">{{ 'profit.expenses' | t }}</div>
+                <div class="stat-value negative">{{ fin.expenses | money }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">{{ 'profit.netProfit' | t }}</div>
+                <div class="stat-value" [class.positive]="fin.net_profit >= 0"
+                     [class.negative]="fin.net_profit < 0">{{ fin.net_profit | money }}</div>
+              </div>
             </div>
-          }
-        </div>
+          </div>
+        }
+
+        @if (s.top_products?.length) {
+          <div class="card" style="margin-top:16px">
+            <h3 class="card-title">{{ 'dashboard.topProducts' | t }}</h3>
+            <table class="data">
+              <tbody>
+                @for (p of s.top_products; track p.product_name) {
+                  <tr>
+                    <td>{{ p.product_name }}</td>
+                    <td class="num strong">{{ p.units }}</td>
+                    <td class="num">{{ p.revenue | money }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
       }
 
-      <!-- AI Analysis -->
-      <div class="report-card">
-        <div class="report-card-header">
-          <div class="report-card-title">
-            <mat-icon style="color:#8b5cf6">auto_awesome</mat-icon>
-            AI Financial Analysis
-          </div>
-        </div>
-        <div style="padding:20px">
-          <div class="ai-query">
-            <mat-form-field appearance="outline" style="flex:1">
-              <mat-label>Ask a financial question</mat-label>
-              <input matInput [(ngModel)]="aiQuery" placeholder="e.g. What are my top selling products this month?">
-            </mat-form-field>
-            <button mat-raised-button color="primary" (click)="runAiAnalysis()" [disabled]="!aiQuery || aiLoading"
-              style="height:56px;min-width:120px">
-              @if (aiLoading) { <mat-spinner diameter="20"></mat-spinner> } @else { <mat-icon>send</mat-icon> }
-              {{ aiLoading ? 'Analyzing...' : 'Analyze' }}
-            </button>
-          </div>
-
-          @if (aiResponse()) {
-            <div class="ai-response">
-              <div class="ai-response-header">
-                <mat-icon style="color:#8b5cf6">psychology</mat-icon>
-                <strong>AI Response</strong>
+      <div class="card" style="margin-top:16px">
+        <h3 class="card-title">{{ 'common.export' | t }}</h3>
+        <p class="small muted" style="margin-top:0">{{ 'reports.choosePeriod' | t }}</p>
+        <div class="export-grid">
+          @for (kind of exports; track kind.key) {
+            @if (allowed(kind)) {
+              <div class="export-row">
+                <span class="strong">{{ kind.label | t }}</span>
+                <div class="btn-row">
+                  <button class="btn sm" (click)="download(kind.key, 'xlsx')">
+                    <mat-icon>grid_on</mat-icon> {{ 'common.excel' | t }}
+                  </button>
+                  <button class="btn sm" (click)="download(kind.key, 'csv')">
+                    <mat-icon>description</mat-icon> {{ 'common.csv' | t }}
+                  </button>
+                </div>
               </div>
-              <div style="white-space:pre-wrap;line-height:1.75;color:#1e293b">{{ aiResponse() }}</div>
-            </div>
+            }
           }
         </div>
       </div>
     </div>
   `,
   styles: [`
-    .report-card {
-      background: white; border-radius: 12px;
-      border: 1px solid #e2e8f0;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-      overflow: hidden;
+    .export-grid { display: grid; gap: 10px; }
+    .export-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+      &:last-child { border-bottom: none; }
     }
-    .report-card-header {
-      padding: 16px 20px;
-      border-bottom: 1px solid #f1f5f9;
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .report-card-title {
-      display: flex; align-items: center; gap: 8px;
-      font-size: 15px; font-weight: 600; color: #0f172a;
-    }
-    canvas { display: block; padding: 16px; }
-    .month-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-      gap: 12px;
-    }
-    .month-tile {
-      background: white; border-radius: 10px;
-      border: 1px solid #e2e8f0; padding: 16px 14px;
-      text-align: center;
-    }
-    .month-name { font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 6px; }
-    .month-total { font-size: 16px; font-weight: 700; color: #0f172a; }
-    .month-count { font-size: 11px; color: #94a3b8; margin-top: 4px; }
-    .ai-query { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
-    .ai-response {
-      background: #f5f3ff; border-left: 4px solid #8b5cf6;
-      padding: 16px 20px; border-radius: 8px;
-    }
-    .ai-response-header { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
-  `]
+  `],
 })
-export class ReportsComponent implements OnInit, AfterViewInit {
+export class ReportsComponent implements OnInit {
   private api = inject(ApiService);
+  private i18n = inject(TranslationService);
+  private auth = inject(AuthService);
 
-  @ViewChild('monthlyChart') chartRef!: ElementRef<HTMLCanvasElement>;
+  readonly exports: ExportKind[] = [
+    { key: 'sales', label: 'reports.sales', roles: ['owner', 'manager'] },
+    { key: 'stock', label: 'reports.stock', roles: ['owner', 'manager'] },
+    { key: 'receipts', label: 'reports.receipts', roles: ['owner', 'manager'] },
+    { key: 'finance', label: 'reports.finance', roles: ['owner', 'manager'] },
+    { key: 'financial-summary', label: 'reports.financial', roles: ['owner'] },
+  ];
 
-  monthlyData = signal<any[]>([]);
-  loading = false;
-  aiQuery = '';
-  aiLoading = false;
-  aiResponse = signal<string | null>(null);
+  dateFrom = '';
+  dateTo = '';
+  preset: 'today' | 'month' | 'custom' = 'month';
+
+  summary = signal<ReportSummary | null>(null);
 
   ngOnInit() {
-    this.loading = true;
-    this.api.getMonthlySalesReport().subscribe({
-      next: (data) => { this.monthlyData.set(data.slice(-6)); this.loading = false; this.drawChart(); },
-      error: () => this.loading = false,
-    });
+    this.setMonth();
   }
 
-  ngAfterViewInit() { this.drawChart(); }
+  setToday() {
+    const today = new Date().toISOString().slice(0, 10);
+    this.dateFrom = today;
+    this.dateTo = today;
+    this.preset = 'today';
+    this.load();
+  }
 
-  drawChart() {
-    const data = this.monthlyData();
-    if (!data.length || !this.chartRef) return;
-    setTimeout(() => {
-      const ctx = this.chartRef.nativeElement.getContext('2d');
-      if (!ctx) return;
-      const labels = data.map(d => d.month_label || d.month);
-      const values = data.map(d => d.total);
-      const width = this.chartRef.nativeElement.clientWidth || 600;
-      const height = 250;
-      this.chartRef.nativeElement.width = width;
-      this.chartRef.nativeElement.height = height;
-      const max = Math.max(...values) || 1;
-      const barW = Math.floor(width / labels.length) - 10;
-      values.forEach((v, i) => {
-        const barH = (v / max) * (height - 50);
-        const x = i * (barW + 10) + 10;
-        const y = height - barH - 28;
-        const grad = ctx.createLinearGradient(x, y, x, y + barH);
-        grad.addColorStop(0, '#818cf8');
-        grad.addColorStop(1, '#6366f1');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.roundRect(x, y, barW, barH, 4);
-        ctx.fill();
-        ctx.fillStyle = '#64748b';
-        ctx.font = '11px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(labels[i], x + barW / 2, height - 8);
-        if (v > 0) {
-          ctx.fillStyle = '#0f172a';
-          ctx.font = '10px Inter, sans-serif';
-          ctx.fillText('$' + (v / 1000).toFixed(1) + 'k', x + barW / 2, y - 4);
-        }
+  setMonth() {
+    const now = new Date();
+    this.dateFrom = new Date(now.getFullYear(), now.getMonth(), 1)
+      .toISOString().slice(0, 10);
+    this.dateTo = now.toISOString().slice(0, 10);
+    this.preset = 'month';
+    this.load();
+  }
+
+  private params(): Record<string, string> {
+    return { date_from: this.dateFrom, date_to: this.dateTo, period: 'custom' };
+  }
+
+  load() {
+    this.api.getReportSummary(this.params()).subscribe(r => this.summary.set(r));
+  }
+
+  allowed(kind: ExportKind): boolean {
+    return kind.roles.includes(this.auth.role() ?? '');
+  }
+
+  download(kind: string, fmt: 'xlsx' | 'csv') {
+    this.api.downloadExport(kind, this.params(), fmt, this.i18n.lang())
+      .subscribe(blob => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${kind}_${this.dateFrom}_${this.dateTo}.${fmt}`;
+        link.click();
+        URL.revokeObjectURL(url);
       });
-    }, 100);
-  }
-
-  runAiAnalysis() {
-    if (!this.aiQuery) return;
-    this.aiLoading = true;
-    this.api.analyzeWithAI({ query: this.aiQuery }).subscribe({
-      next: (res) => { this.aiResponse.set(res.analysis || res.message || JSON.stringify(res)); this.aiLoading = false; },
-      error: (err) => { this.aiLoading = false; this.aiResponse.set(err.error?.detail || 'AI analysis failed.'); }
-    });
   }
 }

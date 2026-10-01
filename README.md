@@ -1,180 +1,209 @@
-# BrandX POS — Multi-Branch Clothes Shop Management System
+# BrandX — Clothes Shop CRM / POS
 
-A full-stack Point of Sale (POS) system for clothes shops with multi-branch support, built with:
+A simple, fast point-of-sale and back-office system for a single clothes shop.
 
-- **Backend**: Django 5 + Django REST Framework + MySQL
-- **Frontend**: Angular 19 (Standalone + Signals)
-- **AI**: Groq (llama3-8b-8192) for financial analysis
+- **Backend**: Django 5 + Django REST Framework + MySQL (SQLite supported for tests)
+- **Frontend**: Angular 19 (Standalone + Signals + Angular Material)
+- **Languages**: O'zbekcha / Русский (UI only — no English)
+
+---
+
+## Features
+
+- **PIN login** — employees sign in with a numeric PIN (no username/password UI).
+  PINs are hashed, attempts are counted and repeated failures trigger a temporary
+  lockout. Employees are created only by the owner.
+- **Roles** — `owner`, `manager`, `cashier`, enforced on the API.
+- **Products** — name, category, barcode (scanner or manual, unique,
+  auto-generatable), cost & selling price, stock, size, colour, description,
+  photo, active flag. Variants (colour × size) with their own barcode and stock.
+- **POS** — search by name or barcode, scan to add to cart, cash / card / mixed
+  payment, automatic **change** calculation, atomic checkout that updates stock.
+- **Sales** — history with filters (today / yesterday / week / month / custom,
+  cashier, payment method), detail view, receipt re-print.
+- **Receipts** — thermal 80 mm PDF (`/api/sales/{id}/receipt_pdf/`), RU/UZ labels.
+- **Returns** — return goods from a sale; stock goes back and the sale status is
+  updated without deleting history.
+- **Inventory** — goods receipts (kirim) and a full stock-movement trail
+  (purchase / sale / return / adjustment / inventory).
+- **Finance** — income & expense entries; owner-only profit (revenue, COGS,
+  gross, expenses, net).
+- **Reports** — Excel (`.xlsx`) and CSV exports for sales, stock, receipts,
+  finance and the financial summary.
+- **Dashboard** — period selector, revenue, sales count, units sold, cash/card
+  split, average ticket, top products, simple sales chart, low-stock list.
+- **Audit log** — WHO / WHAT / WHEN for important actions (secrets are never
+  logged).
+- **Admin panel** — Django admin reachable with the same PIN, available in
+  O‘zbekcha / Русский.
+- **Modern UI** — one design system across every screen, **light / dark / system**
+  themes, collapsible sidebar, toasts, skeleton loaders, empty states, and a
+  keyboard-first POS (`F2` search, `Enter` scan/add, `F4` pay).
 
 ---
 
 ## Architecture
 
 ```
-BrandX/
-├── backend/          # Django REST API
+brandx/
+├── backend/                     # Django REST API
 │   └── apps/
-│       ├── authentication/   # JWT auth, user roles (admin/manager/guest)
-│       ├── products/         # Catalog, variants, colors, sizes, barcodes
-│       ├── inventory/        # Stock items (FIFO), adjustments, valuation
-│       ├── vendors/          # Vendor management, financial tracking
-│       ├── customers/        # Credit/installment customers, plans
-│       ├── sales/            # POS sales (cash/credit/installment), receipts
-│       └── ai_analysis/      # Groq AI financial analysis
-└── frontend/         # Angular 19 web app
-    └── src/app/
-        ├── core/             # Services, guards, interceptors, models
-        ├── features/         # Lazy-loaded pages (dashboard, pos, products...)
-        └── layout/           # Main layout with Material sidenav
+│       ├── authentication/      # PIN login, users, roles, permissions
+│       ├── products/            # categories, products, variants, colours, sizes
+│       ├── inventory/           # receipts, stock movements, valuation
+│       ├── sales/               # POS checkout, receipts, returns, dashboard
+│       ├── finance/             # income / expense
+│       ├── reports/             # Excel / CSV exports
+│       ├── audit/               # audit log
+│       ├── customers/           # simple customer records
+│       ├── vendors/             # (installed, no UI)
+│       └── ai_analysis/         # (installed, no UI)
+├── frontend/                    # Angular 19 web app
+│   └── src/app/
+│       ├── core/                # services, guards, interceptors, i18n, models
+│       ├── features/            # pos, dashboard, products, stock, sales, ...
+│       └── layout/              # compact role-aware sidebar
+├── docker-compose.yml
+├── verify_e2e.py                # end-to-end smoke test
+└── IMPLEMENTATION_REPORT.md     # what was changed and why
 ```
 
 ---
 
-## Features
+## Quick start (Docker, recommended)
 
-### Sales
-- **Cash** sales with change calculator
-- **Credit** sales with credit limit enforcement
-- **Installment** plans with down payment, monthly tracking, overdue alerts
-- PDF receipt generation (thermal 85mm format)
+Runs MySQL + Django + Angular (nginx) together, applies migrations, seeds starter
+data and creates the owner account.
 
-### Products & Inventory
-- Products with variants (color × size combinations)
-- Barcode generation (Code128) per product/variant
-- Stock tracking with vendor linkage, import/production/expiry dates
-- FIFO stock deduction on sales
-- Inventory valuation (cost + retail + potential profit)
+```bash
+cd brandx
+docker compose up --build -d
+```
 
-### Financial Management
-- Vendor balance tracking (purchase/payment/return)
-- Customer credit/installment balance tracking
-- Dashboard stats (today/month/year + by sale type)
-- AI-powered financial analysis via Groq API
+| Service | URL |
+|---------|-----|
+| Web app | http://localhost:4200 |
+| API     | http://localhost:8000/api |
+| Django admin | http://localhost:8000/admin |
 
-### Users & Roles
-- **Admin**: Full access including user management and settings
-- **Manager**: Product, inventory, vendor, customer, sales management
-- **Guest**: POS only (cash sales)
+**Login (PIN):** `0808`
+Owner password (technical fallback): `admin` / `1`
+
+The **Django admin** at http://localhost:8000/admin uses the same **PIN login**
+(the standard username/password form is replaced by a PIN pad, with the same
+rate limiting). The admin UI is available in **O‘zbekcha / Русский** — switch the
+language in the top bar, and it opens in the employee's saved language after PIN
+login. Section and model names (Mahsulotlar / Товары, Sotuvlar / Продажи, …) are
+translated too. Only staff accounts (owner) can sign in to the admin.
+
+Override before first start by copying `.env.example` to `.env`
+(`DJANGO_ADMIN_PIN`, `DJANGO_ADMIN_PASSWORD`, ports, DB credentials).
+
+Useful commands:
+
+```bash
+docker compose logs -f backend   # follow backend logs
+docker compose down              # stop
+docker compose down -v           # stop and wipe the database volume
+python3 verify_e2e.py            # end-to-end smoke test against the stack
+```
 
 ---
 
-## Setup
+## Local development
 
-### Prerequisites
-- Python 3.11+
-- Node.js 20+
-- MySQL 8+
-
----
-
-### 1. Backend Setup
+### Backend
 
 ```bash
 cd backend
-
-# Create virtual environment
 python -m venv venv
-venv\Scripts\activate       # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# Install dependencies
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Configure environment
-copy .env.example .env      # Then edit .env with your settings
-# or use the existing .env which has default values
-
-# Create database
-mysql -u root -p159632 -e "CREATE DATABASE IF NOT EXISTS brandx CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-
-# Run migrations
+cp .env.example .env            # then edit DB settings
 python manage.py migrate
-
-# Create superuser (admin account)
-python manage.py createsuperuser
-
-# Load initial data (optional)
-python manage.py shell -c "
-from apps.products.models import Color, Size
-Color.objects.get_or_create(name='Black', defaults={'hex_code': '#000000'})
-Color.objects.get_or_create(name='White', defaults={'hex_code': '#FFFFFF'})
-Color.objects.get_or_create(name='Red', defaults={'hex_code': '#FF0000'})
-for name in ['XS', 'S', 'M', 'L', 'XL', 'XXL']:
-    Size.objects.get_or_create(name=name, defaults={'size_type': 'letter'})
-print('Initial data loaded.')
-"
-
-# Start development server
+python manage.py seed_data      # starter categories / colours / sizes
+python manage.py create_admin   # owner account (admin / 1, PIN 0808)
 python manage.py runserver
 ```
 
-Backend API runs at: **http://localhost:8000**
+Runs at http://localhost:8000.
 
----
-
-### 2. Frontend Setup (Angular 19)
+### Frontend
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Start development server
 npm start
 ```
 
-Frontend runs at: **http://localhost:4200**
-
-Default login after creating superuser:
-- Username: as created in `createsuperuser`
-- Password: as created in `createsuperuser`
-
-
+Runs at http://localhost:4200 (proxies `/api` to the backend).
 
 ---
 
-## Environment Variables (backend/.env)
+## Environment variables (backend)
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SECRET_KEY` | Django secret key | (set in .env) |
-| `DB_NAME` | MySQL database name | `brandx` |
+| `DB_ENGINE` | `django.db.backends.mysql` or `...sqlite3` | mysql |
+| `DB_NAME` | Database name (or `:memory:` for SQLite) | `brandx` |
 | `DB_USER` | MySQL user | `root` |
 | `DB_PASSWORD` | MySQL password | `159632` |
-| `DB_HOST` | MySQL host | `localhost` |
-| `DB_PORT` | MySQL port | `3306` |
-| `GROQ_API_KEY` | Groq API key for AI | optional |
-| `CORS_ALLOWED_ORIGINS` | Allowed CORS origins | `http://localhost:4200` |
-
-Get a free Groq API key at: https://console.groq.com
+| `DB_HOST` / `DB_PORT` | MySQL host / port | `localhost` / `3306` |
+| `PIN_MAX_ATTEMPTS` | Failed PIN attempts before lockout | `5` |
+| `PIN_LOCKOUT_SECONDS` | Lockout duration (seconds) | `300` |
+| `DJANGO_ADMIN_PIN` | Owner login PIN | `0808` |
+| `DJANGO_ADMIN_PASSWORD` | Owner technical password | `1` |
 
 ---
 
-## API Endpoints
+## API endpoints
 
 | Module | Base URL | Description |
 |--------|----------|-------------|
-| Auth | `/api/auth/` | Login, logout, user management |
-| Products | `/api/products/` | Products, variants, categories, colors, sizes |
-| Inventory | `/api/inventory/` | Stock items, adjustments, valuation |
-| Vendors | `/api/vendors/` | Vendor CRUD, transactions |
-| Customers | `/api/customers/` | Customer CRUD, installment plans |
-| Sales | `/api/sales/` | Sales, receipts, dashboard stats |
-| AI | `/api/ai/` | Financial analysis, dashboard |
+| Auth | `/api/auth/` | `login/pin/`, `login/`, `logout/`, `users/` |
+| Products | `/api/products/` | products, variants, categories, colours, sizes, `search/` |
+| Inventory | `/api/inventory/` | `receipts/`, `movements/`, `valuation/` |
+| Sales | `/api/sales/` | sales, `returns/`, `receipt_pdf/`, `return_items/`, `dashboard/` |
+| Finance | `/api/finance/` | income / expense entries + `summary/` |
+| Reports | `/api/reports/` | `sales/`, `stock/`, `receipts/`, `finance/`, `financial-summary/` |
+| Audit | `/api/audit/` | audit log (read-only) |
+| Customers | `/api/customers/` | simple customer records |
 
 ---
 
-## Tech Stack Details
+## Tests
+
+```bash
+# Backend unit tests (SQLite, no MySQL needed)
+cd brandx
+docker compose run --rm --no-deps --entrypoint sh \
+  -v "$(pwd)/backend:/app" \
+  -e DB_ENGINE=django.db.backends.sqlite3 -e DB_NAME=:memory: \
+  backend -c "python manage.py test apps"
+
+# End-to-end (stack must be running)
+python3 verify_e2e.py
+```
+
+Unit suite: **111 tests, OK**. E2E smoke test: **46 checks, ALL PASSED**.
+
+---
+
+## Tech stack
 
 | Layer | Technology |
 |-------|-----------|
-| Backend API | Django 5 + DRF 3.15 |
-| Auth | JWT (SimpleJWT) — 8h access, 7d refresh |
-| Database | MySQL 8 (via mysqlclient) |
+| Backend API | Django 5 + DRF |
+| Auth | PIN login → JWT (SimpleJWT) |
+| Database | MySQL 8 (SQLite for tests) |
 | Barcodes | python-barcode (Code128) |
-| PDF Receipts | ReportLab (thermal 85mm) |
-| AI | Groq (llama3-8b-8192) + rule-based fallback |
-| Web Frontend | Angular 19 Standalone + Angular Material |
-| State (Web) | Angular Signals |
+| Receipts | ReportLab (thermal 80 mm PDF) |
+| Exports | openpyxl (`.xlsx`) + CSV (UTF-8 BOM) |
+| Frontend | Angular 19 Standalone + Angular Material |
+| i18n | Lightweight custom `TranslationService` (RU / UZ) |
+| Theming | CSS custom-property design system + dark mode |
 
+See [IMPLEMENTATION_REPORT.md](./IMPLEMENTATION_REPORT.md) for the full list of
+changes, removals, permissions and remaining items.

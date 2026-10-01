@@ -1,240 +1,176 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
-import { MatButtonModule } from '@angular/material/button';
+import { Component, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
-import { MatInputModule } from '@angular/material/input';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatSelectModule } from '@angular/material/select';
-import { MatTableModule } from '@angular/material/table';
-import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatTabsModule } from '@angular/material/tabs';
+import { environment } from '../../../environments/environment';
+import { ToastService } from '../../core/ui/toast.service';
+import { TranslatePipe } from '../../core/i18n/translate.pipe';
+import { Lang } from '../../core/i18n/translations';
+import { TranslationService } from '../../core/i18n/translation.service';
 import { ApiService } from '../../core/services/api.service';
 import { AuthService } from '../../core/services/auth.service';
-import { Category, Color, Size } from '../../core/models/models';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [
-    CommonModule, FormsModule, ReactiveFormsModule,
-    MatButtonModule, MatIconModule, MatInputModule,
-    MatFormFieldModule, MatSelectModule, MatTableModule,
-    MatSnackBarModule, MatProgressBarModule, MatTabsModule,
-  ],
+  imports: [CommonModule, FormsModule, MatIconModule, TranslatePipe],
   template: `
-    <div class="page-container">
-      <div class="page-header"><h1>Settings</h1></div>
+    <div class="page-head">
+      <h1 class="page-title">{{ 'settings.title' | t }}</h1>
+    </div>
 
-      <mat-tab-group>
-        <!-- Categories Tab -->
-        <mat-tab label="Categories">
-          <div style="padding:16px">
-            <form [formGroup]="catForm" (ngSubmit)="addCategory()" style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px">
-              <mat-form-field appearance="outline">
-                <mat-label>Category Name</mat-label>
-                <input matInput formControlName="name">
-              </mat-form-field>
-              <mat-form-field appearance="outline">
-                <mat-label>Parent Category</mat-label>
-                <mat-select formControlName="parent">
-                  <mat-option [value]="null">Top Level</mat-option>
-                  @for (c of categories(); track c.id) {
-                    <mat-option [value]="c.id">{{ c.name }}</mat-option>
-                  }
-                </mat-select>
-              </mat-form-field>
-              <button mat-raised-button color="primary" type="submit" [disabled]="catForm.invalid">
-                <mat-icon>add</mat-icon> Add
-              </button>
-            </form>
-            <div class="data-table-container">
-              <table mat-table [dataSource]="categories()">
-                <ng-container matColumnDef="name">
-                  <th mat-header-cell *matHeaderCellDef>Name</th>
-                  <td mat-cell *matCellDef="let c">{{ c.name }}</td>
-                </ng-container>
-                <ng-container matColumnDef="description">
-                  <th mat-header-cell *matHeaderCellDef>Description</th>
-                  <td mat-cell *matCellDef="let c">{{ c.description || '—' }}</td>
-                </ng-container>
-                <tr mat-header-row *matHeaderRowDef="['name','description']"></tr>
-                <tr mat-row *matRowDef="let row; columns: ['name','description'];"></tr>
-              </table>
+    <div class="page-body">
+      <div class="grid grid-2">
+        <!-- Profile -->
+        <div class="card">
+          <h3 class="card-title">{{ 'settings.profile' | t }}</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label">{{ 'employees.name' | t }}</label>
+              <input class="input" [(ngModel)]="profile.first_name" name="first_name">
+            </div>
+            <div class="field">
+              <label class="field-label">{{ 'employees.name' | t }}</label>
+              <input class="input" [(ngModel)]="profile.last_name" name="last_name">
+            </div>
+            <div class="field">
+              <label class="field-label">Email</label>
+              <input class="input" [(ngModel)]="profile.email" name="email">
+            </div>
+            <div class="field">
+              <label class="field-label">{{ 'employees.phone' | t }}</label>
+              <input class="input" [(ngModel)]="profile.phone" name="phone">
             </div>
           </div>
-        </mat-tab>
+          <div class="btn-row" style="margin-top:14px">
+            <button class="btn primary" (click)="saveProfile()">
+              <mat-icon>save</mat-icon> {{ 'common.save' | t }}
+            </button>
+          </div>
+        </div>
 
-        <!-- Colors Tab -->
-        <mat-tab label="Colors">
-          <div style="padding:16px">
-            <form [formGroup]="colorForm" (ngSubmit)="addColor()" style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px">
-              <mat-form-field appearance="outline">
-                <mat-label>Color Name</mat-label>
-                <input matInput formControlName="name">
-              </mat-form-field>
-              <mat-form-field appearance="outline">
-                <mat-label>Hex Code</mat-label>
-                <input matInput formControlName="hex_code" placeholder="#RRGGBB">
-              </mat-form-field>
-              <input type="color" [(ngModel)]="colorPickerValue" [ngModelOptions]="{standalone:true}"
-                (input)="colorForm.get('hex_code')?.setValue(colorPickerValue)" style="height:56px;cursor:pointer">
-              <button mat-raised-button color="primary" type="submit" [disabled]="colorForm.invalid">
-                <mat-icon>add</mat-icon> Add
+        <!-- Language -->
+        <div class="card">
+          <h3 class="card-title">{{ 'settings.changeLanguage' | t }}</h3>
+          <div class="lang-list">
+            @for (l of i18n.languages; track l.code) {
+              <button class="lang-option" [class.active]="i18n.lang() === l.code"
+                      (click)="setLang(l.code)">
+                <mat-icon>{{ i18n.lang() === l.code ? 'radio_button_checked' : 'radio_button_unchecked' }}</mat-icon>
+                {{ l.label }}
               </button>
-            </form>
-            <div class="data-table-container">
-              <table mat-table [dataSource]="colors()">
-                <ng-container matColumnDef="swatch">
-                  <th mat-header-cell *matHeaderCellDef></th>
-                  <td mat-cell *matCellDef="let c">
-                    <span class="color-circle" [style.background]="c.hex_code"></span>
-                  </td>
-                </ng-container>
-                <ng-container matColumnDef="name">
-                  <th mat-header-cell *matHeaderCellDef>Name</th>
-                  <td mat-cell *matCellDef="let c">{{ c.name }}</td>
-                </ng-container>
-                <ng-container matColumnDef="hex">
-                  <th mat-header-cell *matHeaderCellDef>Hex</th>
-                  <td mat-cell *matCellDef="let c"><code>{{ c.hex_code }}</code></td>
-                </ng-container>
-                <tr mat-header-row *matHeaderRowDef="['swatch','name','hex']"></tr>
-                <tr mat-row *matRowDef="let row; columns: ['swatch','name','hex'];"></tr>
-              </table>
+            }
+          </div>
+        </div>
+
+        <!-- PIN -->
+        <div class="card">
+          <h3 class="card-title">{{ 'settings.changePin' | t }}</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label class="field-label">{{ 'settings.currentPin' | t }}</label>
+              <input class="input" inputmode="numeric" maxlength="8"
+                     [(ngModel)]="pinForm.current" name="current">
+            </div>
+            <div class="field">
+              <label class="field-label">{{ 'settings.newPin' | t }}</label>
+              <input class="input" inputmode="numeric" maxlength="8"
+                     [(ngModel)]="pinForm.pin" name="new">
+            </div>
+            <div class="field">
+              <label class="field-label">{{ 'settings.confirmPin' | t }}</label>
+              <input class="input" inputmode="numeric" maxlength="8"
+                     [(ngModel)]="pinForm.confirm" name="confirm">
             </div>
           </div>
-        </mat-tab>
-
-        <!-- Sizes Tab -->
-        <mat-tab label="Sizes">
-          <div style="padding:16px">
-            <form [formGroup]="sizeForm" (ngSubmit)="addSize()" style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px">
-              <mat-form-field appearance="outline">
-                <mat-label>Size Name</mat-label>
-                <input matInput formControlName="name">
-              </mat-form-field>
-              <mat-form-field appearance="outline">
-                <mat-label>Type</mat-label>
-                <mat-select formControlName="size_type">
-                  <mat-option value="letter">Letter (XS, S, M, L, XL)</mat-option>
-                  <mat-option value="numeric">Numeric (28, 30, 32...)</mat-option>
-                  <mat-option value="age">Age (2Y, 4Y...)</mat-option>
-                  <mat-option value="universal">Universal</mat-option>
-                </mat-select>
-              </mat-form-field>
-              <button mat-raised-button color="primary" type="submit" [disabled]="sizeForm.invalid">
-                <mat-icon>add</mat-icon> Add
-              </button>
-            </form>
-            <div class="data-table-container">
-              <table mat-table [dataSource]="sizes()">
-                <ng-container matColumnDef="name">
-                  <th mat-header-cell *matHeaderCellDef>Name</th>
-                  <td mat-cell *matCellDef="let s">{{ s.name }}</td>
-                </ng-container>
-                <ng-container matColumnDef="type">
-                  <th mat-header-cell *matHeaderCellDef>Type</th>
-                  <td mat-cell *matCellDef="let s">{{ s.size_type }}</td>
-                </ng-container>
-                <tr mat-header-row *matHeaderRowDef="['name','type']"></tr>
-                <tr mat-row *matRowDef="let row; columns: ['name','type'];"></tr>
-              </table>
-            </div>
+          <div class="btn-row" style="margin-top:14px">
+            <button class="btn primary" (click)="changePin()">
+              <mat-icon>pin</mat-icon> {{ 'common.save' | t }}
+            </button>
           </div>
-        </mat-tab>
+        </div>
 
-        <!-- Users Tab (Admin only) -->
-        @if (auth.isAdmin()) {
-          <mat-tab label="Users">
-            <div style="padding:16px">
-              <div class="data-table-container">
-                <table mat-table [dataSource]="users()">
-                  <ng-container matColumnDef="username">
-                    <th mat-header-cell *matHeaderCellDef>Username</th>
-                    <td mat-cell *matCellDef="let u">{{ u.username }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="name">
-                    <th mat-header-cell *matHeaderCellDef>Full Name</th>
-                    <td mat-cell *matCellDef="let u">{{ u.first_name }} {{ u.last_name }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="role">
-                    <th mat-header-cell *matHeaderCellDef>Role</th>
-                    <td mat-cell *matCellDef="let u">
-                      <span class="badge badge-default">{{ u.role }}</span>
-                    </td>
-                  </ng-container>
-                  <ng-container matColumnDef="status">
-                    <th mat-header-cell *matHeaderCellDef>Status</th>
-                    <td mat-cell *matCellDef="let u">
-                      <span [class]="'badge ' + (u.is_active ? 'badge-success' : 'badge-default')">
-                        {{ u.is_active ? 'Active' : 'Inactive' }}
-                      </span>
-                    </td>
-                  </ng-container>
-                  <tr mat-header-row *matHeaderRowDef="['username','name','role','status']"></tr>
-                  <tr mat-row *matRowDef="let row; columns: ['username','name','role','status'];"></tr>
-                </table>
-              </div>
-            </div>
-          </mat-tab>
-        }
-      </mat-tab-group>
+        <!-- About -->
+        <div class="card">
+          <h3 class="card-title">{{ 'settings.about' | t }}</h3>
+          <div class="kv"><span class="muted">{{ 'employees.role' | t }}</span>
+            <b>{{ ('role.' + (auth.role() || '')) | t }}</b></div>
+          <div class="kv"><span class="muted">{{ 'settings.currency' | t }}</span>
+            <b>{{ environment.currency }}</b></div>
+          <div class="kv"><span class="muted">{{ 'employees.username' | t }}</span>
+            <b>{{ auth.currentUser()?.username }}</b></div>
+          <div class="kv"><span class="muted">{{ 'settings.version' | t }}</span>
+            <b>{{ environment.appName }}</b></div>
+        </div>
+      </div>
     </div>
   `,
-  styles: [`.color-circle { display: inline-block; width: 24px; height: 24px; border-radius: 50%; border: 1px solid #ccc; }`]
-})
-export class SettingsComponent implements OnInit {
-  private api = inject(ApiService);
-  auth = inject(AuthService);
-  private fb = inject(FormBuilder);
-  private snackBar = inject(MatSnackBar);
-
-  categories = signal<Category[]>([]);
-  colors = signal<Color[]>([]);
-  sizes = signal<Size[]>([]);
-  users = signal<any[]>([]);
-  colorPickerValue = '#000000';
-
-  catForm: FormGroup = this.fb.group({ name: ['', Validators.required], parent: [null] });
-  colorForm: FormGroup = this.fb.group({ name: ['', Validators.required], hex_code: ['#000000', Validators.required] });
-  sizeForm: FormGroup = this.fb.group({ name: ['', Validators.required], size_type: ['letter', Validators.required] });
-
-  ngOnInit() {
-    this.loadAll();
-    if (this.auth.isAdmin()) {
-      this.api.getUsers().subscribe(r => this.users.set(r.results || r));
+  styles: [`
+    .lang-list { display: grid; gap: 8px; }
+    .lang-option {
+      display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 14px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+      cursor: pointer; font-family: inherit; font-size: 14px; color: var(--text);
+      transition: background 150ms, border-color 150ms;
+      &:hover { background: var(--surface-2); }
+      &.active { border-color: transparent; background: var(--primary-soft); color: var(--primary); font-weight: 600; }
+      mat-icon { font-size: 19px; width: 19px; height: 19px; }
     }
+    .kv {
+      display: flex; justify-content: space-between; padding: 9px 0;
+      border-bottom: 1px solid var(--border); font-size: 13.5px;
+      &:last-child { border-bottom: none; }
+    }
+  `],
+})
+export class SettingsComponent {
+  private api = inject(ApiService);
+  private toast = inject(ToastService);
+  i18n = inject(TranslationService);
+  auth = inject(AuthService);
+
+  readonly environment = environment;
+
+  profile = {
+    first_name: this.auth.currentUser()?.first_name ?? '',
+    last_name: this.auth.currentUser()?.last_name ?? '',
+    email: this.auth.currentUser()?.email ?? '',
+    phone: this.auth.currentUser()?.phone ?? '',
+  };
+
+  pinForm = { current: '', pin: '', confirm: '' };
+
+  setLang(lang: Lang) {
+    this.auth.persistLanguage(lang);
   }
 
-  loadAll() {
-    this.api.getCategories({ page_size: 100 }).subscribe(r => this.categories.set(r.results));
-    this.api.getColors({ page_size: 100 }).subscribe(r => this.colors.set(r.results));
-    this.api.getSizes({ page_size: 100 }).subscribe(r => this.sizes.set(r.results));
-  }
-
-  addCategory() {
-    if (this.catForm.invalid) return;
-    this.api.createCategory(this.catForm.value).subscribe({
-      next: () => { this.catForm.reset(); this.api.getCategories({ page_size: 100 }).subscribe(r => this.categories.set(r.results)); this.snackBar.open('Category added!', '', { duration: 2000 }); },
-      error: (err) => this.snackBar.open(err.error?.name?.[0] || 'Failed', 'Close', { duration: 3000 })
+  saveProfile() {
+    this.api.updateMe(this.profile).subscribe({
+      next: () => {
+        this.toast.success(this.i18n.t('common.saved'));
+        this.auth.refreshCurrentUser();
+      },
+      error: () => this.toast.error(this.i18n.t('common.error')),
     });
   }
 
-  addColor() {
-    if (this.colorForm.invalid) return;
-    this.api.createColor(this.colorForm.value).subscribe({
-      next: () => { this.colorForm.reset({ hex_code: '#000000' }); this.api.getColors({ page_size: 100 }).subscribe(r => this.colors.set(r.results)); this.snackBar.open('Color added!', '', { duration: 2000 }); },
-      error: (err) => this.snackBar.open(err.error?.name?.[0] || 'Failed', 'Close', { duration: 3000 })
-    });
-  }
-
-  addSize() {
-    if (this.sizeForm.invalid) return;
-    this.api.createSize(this.sizeForm.value).subscribe({
-      next: () => { this.sizeForm.reset({ size_type: 'letter' }); this.api.getSizes({ page_size: 100 }).subscribe(r => this.sizes.set(r.results)); this.snackBar.open('Size added!', '', { duration: 2000 }); },
-      error: (err) => this.snackBar.open(err.error?.name?.[0] || 'Failed', 'Close', { duration: 3000 })
+  changePin() {
+    const { current, pin, confirm } = this.pinForm;
+    if (!current || !pin) return;
+    if (pin !== confirm) {
+      this.toast.error(this.i18n.t('settings.pinMismatch'));
+      return;
+    }
+    this.api.changeMyPin(current, pin).subscribe({
+      next: () => {
+        this.toast.success(this.i18n.t('common.saved'));
+        this.pinForm = { current: '', pin: '', confirm: '' };
+      },
+      error: err => {
+        const detail = err.error?.current_pin?.[0] || err.error?.pin?.[0] ||
+          err.error?.detail;
+        this.toast.error(detail || this.i18n.t('common.error'));
+      },
     });
   }
 }

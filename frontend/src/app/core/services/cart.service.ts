@@ -1,5 +1,5 @@
 import { Injectable, signal } from '@angular/core';
-import { CartItem, Product, ProductVariant } from '../models/models';
+import { CartItem, VariantSearchResult } from '../models/models';
 
 @Injectable({ providedIn: 'root' })
 export class CartService {
@@ -7,49 +7,60 @@ export class CartService {
   readonly items = this._items.asReadonly();
 
   get subtotal(): number {
-    return this._items().reduce((sum, i) => {
-      const line = i.unit_price * i.quantity;
-      const disc = line * (i.discount_percent / 100);
-      return sum + line - disc;
-    }, 0);
+    return this._items().reduce((sum, i) => sum + i.unitPrice * i.quantity, 0);
   }
 
   get itemCount(): number {
     return this._items().reduce((sum, i) => sum + i.quantity, 0);
   }
 
-  addItem(product: Product, variant: ProductVariant, qty = 1): void {
+  quantityOf(variantId: number): number {
+    return this._items().find(i => i.variantId === variantId)?.quantity ?? 0;
+  }
+
+  /** Adds a scanned/searched variant. Returns false when stock is exhausted. */
+  add(variant: VariantSearchResult, qty = 1): boolean {
     const current = this._items();
-    const idx = current.findIndex(i => i.variant.id === variant.id);
-    if (idx >= 0) {
-      const updated = [...current];
-      updated[idx] = { ...updated[idx], quantity: updated[idx].quantity + qty };
-      this._items.set(updated);
-    } else {
-      this._items.set([...current, {
-        product, variant, quantity: qty,
-        unit_price: variant.effective_price,
-        discount_percent: 0,
-      }]);
+    const existing = current.find(i => i.variantId === variant.id);
+
+    if (existing) {
+      if (existing.quantity + qty > existing.stockQuantity) return false;
+      this._items.set(current.map(i =>
+        i.variantId === variant.id ? { ...i, quantity: i.quantity + qty } : i));
+      return true;
     }
+
+    if (variant.stock_quantity < qty) return false;
+    this._items.set([...current, {
+      variantId: variant.id,
+      productName: variant.product_name,
+      colorName: variant.color_name,
+      sizeName: variant.size_name,
+      unitPrice: Number(variant.price),
+      quantity: qty,
+      stockQuantity: variant.stock_quantity,
+    }]);
+    return true;
   }
 
-  updateQuantity(variantId: number, qty: number): void {
-    if (qty <= 0) { this.removeItem(variantId); return; }
-    this._items.update(items => items.map(i => i.variant.id === variantId ? { ...i, quantity: qty } : i));
+  setQuantity(variantId: number, qty: number): boolean {
+    const item = this._items().find(i => i.variantId === variantId);
+    if (!item) return false;
+    if (qty <= 0) {
+      this.remove(variantId);
+      return true;
+    }
+    if (qty > item.stockQuantity) return false;
+    this._items.update(items =>
+      items.map(i => (i.variantId === variantId ? { ...i, quantity: qty } : i)));
+    return true;
   }
 
-  updateDiscount(variantId: number, discountPct: number): void {
-    this._items.update(items => items.map(i =>
-      i.variant.id === variantId ? { ...i, discount_percent: discountPct } : i
-    ));
+  remove(variantId: number): void {
+    this._items.update(items => items.filter(i => i.variantId !== variantId));
   }
 
-  removeItem(variantId: number): void {
-    this._items.update(items => items.filter(i => i.variant.id !== variantId));
-  }
-
-  clearCart(): void {
+  clear(): void {
     this._items.set([]);
   }
 }

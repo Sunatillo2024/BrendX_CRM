@@ -1,8 +1,9 @@
 """Products App Models - Categories, Colors, Sizes, Products, Variants with Barcodes"""
-import uuid
 import os
+import uuid
+
 from django.db import models
-from django.utils.text import slugify
+from django.utils.translation import gettext_lazy as _
 
 
 def product_image_path(instance, filename):
@@ -16,20 +17,22 @@ def category_image_path(instance, filename):
 
 
 class Category(models.Model):
-    """Product categories with hierarchical support (parent/child)."""
-    name = models.CharField(max_length=100)
+    """
+    Product category (flat).
+
+    Categories are managed by the
+    owner/manager in the UI - they are never hard-coded in the application.
+    """
+    name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
-    parent = models.ForeignKey(
-        'self', on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='children'
-    )
     image = models.ImageField(upload_to=category_image_path, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'categories'
-        verbose_name_plural = 'Categories'
+        verbose_name = _('Category')
+        verbose_name_plural = _('Categories')
         ordering = ['name']
 
     def __str__(self):
@@ -37,12 +40,14 @@ class Category(models.Model):
 
 
 class Color(models.Model):
-    """Color options for product variants."""
-    name = models.CharField(max_length=50)
+    """Colour options for product variants."""
+    name = models.CharField(max_length=50, unique=True)
     hex_code = models.CharField(max_length=7, default='#000000')
 
     class Meta:
         db_table = 'colors'
+        verbose_name = _('Color')
+        verbose_name_plural = _('Colors')
         ordering = ['name']
 
     def __str__(self):
@@ -50,7 +55,7 @@ class Color(models.Model):
 
 
 class Size(models.Model):
-    """Size options for product variants (S/M/L, numeric, age-based)."""
+    """Size options for product variants (S/M/L, numeric, universal)."""
     SIZE_LETTER = 'letter'
     SIZE_NUMERIC = 'numeric'
     SIZE_AGE = 'age'
@@ -69,18 +74,21 @@ class Size(models.Model):
 
     class Meta:
         db_table = 'sizes'
+        verbose_name = _('Size')
+        verbose_name_plural = _('Sizes')
         ordering = ['size_type', 'display_order']
+        unique_together = [['name', 'size_type']]
 
     def __str__(self):
-        return f'{self.name} ({self.get_size_type_display()})'
+        return self.name
 
 
 class Product(models.Model):
     """
     Main product entity.
-    Each product can have multiple variants (color + size combinations).
+    Each product has one or more variants (colour + size combinations).
     """
-    name = models.CharField(max_length=200)
+    name = models.CharField(max_length=200, db_index=True)
     description = models.TextField(blank=True)
     category = models.ForeignKey(
         Category, on_delete=models.SET_NULL, null=True, blank=True,
@@ -88,15 +96,20 @@ class Product(models.Model):
     )
     barcode = models.CharField(max_length=50, unique=True, db_index=True)
     image = models.ImageField(upload_to=product_image_path, null=True, blank=True)
+    # Purchase price (owner-only in the API) / sale price
     base_cost_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     base_selling_price = models.DecimalField(max_digits=10, decimal_places=2)
+    low_stock_threshold = models.IntegerField(default=5)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'products'
-        ordering = ['-created_at']
+        verbose_name = _('Product')
+        verbose_name_plural = _('Products')
+        ordering = ['name']
+        indexes = [models.Index(fields=['name', 'is_active'])]
 
     def __str__(self):
         return self.name
@@ -108,8 +121,8 @@ class Product(models.Model):
 
 class ProductVariant(models.Model):
     """
-    Product variant combining product + color + size.
-    Each variant has its own barcode, SKU, and stock quantity.
+    Product variant = product + colour + size.
+    Own barcode, SKU, selling price and stock quantity.
     """
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variants')
     color = models.ForeignKey(
@@ -121,14 +134,22 @@ class ProductVariant(models.Model):
     sku = models.CharField(max_length=100, unique=True, db_index=True)
     barcode = models.CharField(max_length=50, unique=True, db_index=True)
     selling_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    cost_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text='Latest purchase price for this variant (falls back to product base cost).'
+    )
     stock_quantity = models.IntegerField(default=0)
     low_stock_threshold = models.IntegerField(default=5)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'product_variants'
+        verbose_name = _('Product variant')
+        verbose_name_plural = _('Product variants')
         unique_together = [['product', 'color', 'size']]
+        indexes = [models.Index(fields=['product', 'is_active'])]
 
     def __str__(self):
         parts = [self.product.name]
@@ -140,8 +161,14 @@ class ProductVariant(models.Model):
 
     @property
     def effective_price(self):
-        """Variant-specific price or fallback to product base price."""
         return self.selling_price if self.selling_price else self.product.base_selling_price
+
+    @property
+    def effective_cost(self):
+        """Purchase price used for profit calculations (owner-only data)."""
+        if self.cost_price is not None:
+            return self.cost_price
+        return self.product.base_cost_price
 
     @property
     def is_low_stock(self):
@@ -152,7 +179,6 @@ class ProductVariant(models.Model):
         return self.stock_quantity <= 0
 
     def generate_sku(self):
-        """Auto-generate SKU from product + color + size."""
         parts = [self.product.barcode]
         if self.color:
             parts.append(self.color.name[:3].upper())

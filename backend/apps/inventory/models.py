@@ -1,93 +1,141 @@
-"""Inventory App Models - Stock Management with Cost, Vendor, Dates tracking"""
-import uuid
+"""
+Inventory Models.
+
+Product stock lives on ProductVariant.stock_quantity (single source of truth).
+This app records *how* it changed:
+  - StockReceipt      : a goods receipt document (Поступление №32)
+  - StockReceiptItem  : one line of that document (variant + qty + purchase price)
+  - StockMovement     : audit trail of every quantity change
+"""
 from django.db import models
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 
 
-class StockItem(models.Model):
-    """
-    Stock entry representing a batch of products received from a vendor.
-    Tracks: item_id, quantity per package, import/expire/production dates,
-    cost price, and vendor association.
-    """
-    item_id = models.CharField(max_length=50, unique=True, db_index=True)
-    product_variant = models.ForeignKey(
-        'products.ProductVariant', on_delete=models.CASCADE,
-        related_name='stock_items'
-    )
+class StockReceipt(models.Model):
+    """Goods receipt document: stock in from a vendor."""
+    number = models.PositiveIntegerField(unique=True, db_index=True)
+    receipt_date = models.DateField(default=timezone.localdate, db_index=True)
     vendor = models.ForeignKey(
         'vendors.Vendor', on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='stock_items'
+        related_name='receipts'
     )
-    quantity_per_package = models.IntegerField(default=1)
-    total_packages = models.IntegerField(default=1)
-    quantity_received = models.IntegerField()        # total = packages * qty_per_package
-    quantity_in_stock = models.IntegerField()        # current available stock
-    quantity_sold = models.IntegerField(default=0)   # tracking sold units from this batch
-
-    import_date = models.DateField()
-    expire_date = models.DateField(null=True, blank=True)
-    production_date = models.DateField(null=True, blank=True)
-
-    cost_price = models.DecimalField(max_digits=10, decimal_places=2)   # per unit cost
-    total_cost = models.DecimalField(max_digits=15, decimal_places=2)   # cost_price * qty_received
     notes = models.TextField(blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    total_quantity = models.IntegerField(default=0)
+    total_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     created_by = models.ForeignKey(
-        'authentication.User', on_delete=models.SET_NULL, null=True,
-        related_name='stock_entries'
+        'authentication.User', on_delete=models.SET_NULL, null=True, related_name='receipts'
     )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'stock_items'
-        ordering = ['-import_date', '-created_at']
+        db_table = 'stock_receipts'
+        verbose_name = _('Stock receipt')
+        verbose_name_plural = _('Stock receipts')
+        ordering = ['-number']
 
     def __str__(self):
-        return f'{self.item_id} - {self.product_variant}'
+        return f'Поступление №{self.number}'
+
+    @classmethod
+    def next_number(cls):
+        last = cls.objects.aggregate(models.Max('number'))['number__max'] or 0
+        return last + 1
+
+    def recalculate_totals(self):
+        agg = self.items.aggregate(
+            qty=models.Sum('quantity'), cost=models.Sum('total_cost')
+        )
+        self.total_quantity = agg['qty'] or 0
+        self.total_cost = agg['cost'] or 0
+        self.save(update_fields=['total_quantity', 'total_cost'])
+
+
+class StockReceiptItem(models.Model):
+    """One line of a goods receipt."""
+    receipt = models.ForeignKey(StockReceipt, on_delete=models.CASCADE, related_name='items')
+    product_variant = models.ForeignKey(
+        'products.ProductVariant', on_delete=models.PROTECT, related_name='receipt_items'
+    )
+    quantity = models.IntegerField()
+    cost_price = models.DecimalField(max_digits=10, decimal_places=2)
+    total_cost = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+
+    class Meta:
+        db_table = 'stock_receipt_items'
+        verbose_name = _('Stock receipt item')
+        verbose_name_plural = _('Stock receipt items')
+        ordering = ['id']
+
+    def __str__(self):
+        return f'{self.receipt} - {self.product_variant} +{self.quantity}'
 
     def save(self, *args, **kwargs):
-        if not self.item_id:
-            self.item_id = f'STK-{uuid.uuid4().hex[:8].upper()}'
-        if not self.quantity_in_stock:
-            self.quantity_in_stock = self.quantity_received
-        self.total_cost = self.cost_price * self.quantity_received
+        self.total_cost = self.cost_price * self.quantity
         super().save(*args, **kwargs)
 
 
-class StockAdjustment(models.Model):
+class StockMovement(models.Model):
     """
-    Records manual stock adjustments (damage, theft, audit corrections).
-    """
-    ADJUSTMENT_INCREASE = 'increase'
-    ADJUSTMENT_DECREASE = 'decrease'
+    Every stock change is recorded here - nothing may change stock silently.
 
-    ADJUSTMENT_TYPES = [
-        (ADJUSTMENT_INCREASE, 'Increase'),
-        (ADJUSTMENT_DECREASE, 'Decrease'),
+    quantity_before / quantity_change / quantity_after make the trail readable:
+    "was 10, changed -2, now 8".
+    """
+    TYPE_PURCHASE = 'purchase'
+    TYPE_SALE = 'sale'
+    TYPE_RETURN = 'return'
+    TYPE_ADJUSTMENT = 'adjustment'
+    TYPE_INVENTORY = 'inventory'
+
+    MOVEMENT_TYPES = [
+        (TYPE_PURCHASE, 'Purchase'),
+        (TYPE_SALE, 'Sale'),
+        (TYPE_RETURN, 'Return'),
+        (TYPE_ADJUSTMENT, 'Adjustment'),
+        (TYPE_INVENTORY, 'Inventory count'),
     ]
 
     REASON_CHOICES = [
+        ('', '—'),
         ('damage', 'Damage'),
-        ('theft', 'Theft/Loss'),
-        ('audit', 'Audit Correction'),
-        ('return', 'Customer Return'),
-        ('expired', 'Expired'),
+        ('loss', 'Loss / theft'),
+        ('return', 'Customer return'),
+        ('inventory', 'Inventory count'),
+        ('gift', 'Gift / sample'),
+        ('correction', 'Correction'),
         ('other', 'Other'),
     ]
 
-    stock_item = models.ForeignKey(StockItem, on_delete=models.CASCADE, related_name='adjustments')
-    adjustment_type = models.CharField(max_length=10, choices=ADJUSTMENT_TYPES)
-    quantity = models.IntegerField()
-    reason = models.CharField(max_length=20, choices=REASON_CHOICES)
-    notes = models.TextField(blank=True)
-    adjusted_by = models.ForeignKey(
-        'authentication.User', on_delete=models.SET_NULL, null=True
+    product_variant = models.ForeignKey(
+        'products.ProductVariant', on_delete=models.PROTECT, related_name='movements'
     )
-    adjusted_at = models.DateTimeField(auto_now_add=True)
+    movement_type = models.CharField(max_length=20, choices=MOVEMENT_TYPES, db_index=True)
+    quantity_before = models.IntegerField()
+    quantity_change = models.IntegerField()
+    quantity_after = models.IntegerField()
+    unit_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    reason = models.CharField(max_length=20, choices=REASON_CHOICES, blank=True)
+    reference = models.CharField(max_length=50, blank=True)
+    receipt = models.ForeignKey(
+        StockReceipt, on_delete=models.SET_NULL, null=True, blank=True, related_name='movements'
+    )
+    sale = models.ForeignKey(
+        'sales.Sale', on_delete=models.SET_NULL, null=True, blank=True, related_name='movements'
+    )
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(
+        'authentication.User', on_delete=models.SET_NULL, null=True, related_name='movements'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        db_table = 'stock_adjustments'
-        ordering = ['-adjusted_at']
+        db_table = 'stock_movements'
+        verbose_name = _('Stock movement')
+        verbose_name_plural = _('Stock movements')
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['product_variant', '-created_at'])]
 
     def __str__(self):
-        return f'{self.adjustment_type} {self.quantity} - {self.stock_item.item_id}'
+        sign = '+' if self.quantity_change >= 0 else ''
+        return f'{self.product_variant} {sign}{self.quantity_change} ({self.movement_type})'

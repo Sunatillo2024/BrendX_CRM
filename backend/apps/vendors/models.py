@@ -1,5 +1,6 @@
 """Vendors App Models - Vendor management with financial tracking"""
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 
 class Vendor(models.Model):
@@ -20,6 +21,8 @@ class Vendor(models.Model):
 
     class Meta:
         db_table = 'vendors'
+        verbose_name = _('Vendor')
+        verbose_name_plural = _('Vendors')
         ordering = ['name']
 
     def __str__(self):
@@ -58,6 +61,8 @@ class VendorTransaction(models.Model):
 
     class Meta:
         db_table = 'vendor_transactions'
+        verbose_name = _('Vendor transaction')
+        verbose_name_plural = _('Vendor transactions')
         ordering = ['-date', '-created_at']
 
     def __str__(self):

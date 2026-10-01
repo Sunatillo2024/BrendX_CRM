@@ -1,39 +1,72 @@
-"""Sales Views - POS processing, receipt generation, and sales analytics"""
+"""Sales Views - POS checkout, receipts, returns and dashboards"""
 import io
 from decimal import Decimal
-from datetime import datetime, date, timedelta
 
 from django.conf import settings
-from django.db import transaction
-from django.db.models import Sum, Count, Q
+from django.db import IntegrityError, models, transaction
 from django.http import HttpResponse
-from reportlab.lib.pagesizes import A4, letter
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
-from reportlab.lib.units import cm
+from django.utils import timezone
 from reportlab.lib import colors
-
-from rest_framework import viewsets, status
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework import status
 
-from apps.authentication.permissions import IsAdminOrManager, IsAuthenticatedWithRole
-from apps.customers.models import Customer, CustomerTransaction, InstallmentPlan
+from apps.audit.models import AuditLog
+from apps.audit.services import log_action
+from apps.authentication.permissions import IsAuthenticatedWithRole, IsOwner, IsOwnerOrManager
+from apps.common.filters import DateRangeFilterMixin, resolve_period
+from apps.customers.models import Customer
+from apps.inventory import services as inventory_services
+from apps.inventory.models import StockMovement
 from apps.products.models import ProductVariant
-from apps.inventory.models import StockItem
-from .models import Sale, SaleItem, Receipt
+from apps.products.serializers import VariantSearchSerializer
+from apps.sales import services as sales_services
+
+from .models import Receipt, Sale, SaleItem, SaleReturn, SaleReturnItem
 from .serializers import (
-    SaleSerializer, SaleListSerializer, SaleCreateSerializer, ReceiptSerializer
+    SaleCreateSerializer, SaleListSerializer, SaleReturnCreateSerializer,
+    SaleReturnSerializer, SaleSerializer,
 )
 
+RECEIPT_LABELS = {
+    'uz': {
+        'receipt': 'Chek', 'date': 'Sana', 'cashier': 'Kassir', 'customer': 'Mijoz',
+        'item': 'Mahsulot', 'qty': 'Soni', 'price': 'Narx', 'sum': 'Summa',
+        'subtotal': 'Jami', 'discount': 'Chegirma', 'total': 'JAMI',
+        'cash': 'NAQD', 'card': 'KARTA', 'received': 'OLINDI', 'change': 'QAYTIM',
+        'thanks': 'Xaridingiz uchun rahmat!',
+    },
+    'ru': {
+        'receipt': 'Чек', 'date': 'Дата', 'cashier': 'Кассир', 'customer': 'Клиент',
+        'item': 'Товар', 'qty': 'Кол-во', 'price': 'Цена', 'sum': 'Сумма',
+        'subtotal': 'Итого', 'discount': 'Скидка', 'total': 'ИТОГО',
+        'cash': 'НАЛИЧНЫЕ', 'card': 'КАРТА', 'received': 'ПОЛУЧЕНО', 'change': 'СДАЧА',
+        'thanks': 'Спасибо за покупку!',
+    },
+}
 
-class SaleViewSet(viewsets.ModelViewSet):
-    queryset = Sale.objects.select_related(
-        'customer', 'cashier'
-    ).prefetch_related('items__product_variant__product').order_by('-created_at')
-    search_fields = ['sale_number', 'customer__name', 'cashier__username']
-    filterset_fields = ['sale_type', 'status', 'customer']
-    ordering_fields = ['created_at', 'total_amount']
+
+def _labels(request):
+    lang = (request.query_params.get('lang') or '').lower()
+    if lang not in RECEIPT_LABELS:
+        lang = getattr(settings, 'DEFAULT_LANGUAGE', 'uz')
+    return RECEIPT_LABELS.get(lang, RECEIPT_LABELS['uz'])
+
+
+class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
+    """POS sales: create, browse, print receipts, process returns."""
+    queryset = Sale.objects.select_related('cashier', 'customer').prefetch_related(
+        'items__product_variant', 'returns__items'
+    ).order_by('-created_at')
+    search_fields = ['notes', 'customer__name', 'cashier__first_name', 'cashier__username']
+    filterset_fields = ['payment_method', 'status', 'cashier', 'customer']
+    ordering_fields = ['created_at', 'total_amount', 'number']
+    date_field = 'created_at'
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -43,282 +76,375 @@ class SaleViewSet(viewsets.ModelViewSet):
         return SaleSerializer
 
     def get_permissions(self):
-        if self.action == 'destroy':
-            return [IsAdminOrManager()]
+        # Never rely on the @action(permission_classes=...) shortcut here -
+        # this method is what DRF actually calls.
+        if self.action == 'cancel':
+            return [IsOwner()]
+        if self.action == 'return_items':
+            return [IsOwnerOrManager()]
         return [IsAuthenticatedWithRole()]
 
-    @transaction.atomic
+    def get_queryset(self):
+        qs = self.filter_by_period(super().get_queryset())
+        user = self.request.user
+        if getattr(user, 'is_cashier', False):
+            qs = qs.filter(cashier=user)
+        return qs
+
+    # ── Checkout ────────────────────────────────────────────────────
     def create(self, request, *args, **kwargs):
-        """Process a complete POS sale (cash/credit/installment)."""
         serializer = SaleCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
 
-        customer = None
-        if data.get('customer_id'):
-            try:
-                customer = Customer.objects.get(pk=data['customer_id'])
-            except Customer.DoesNotExist:
-                return Response({'detail': 'Customer not found.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            sale = self._process_sale(request, serializer.validated_data)
+        except sales_services.PaymentError as exc:
+            return Response({'detail': exc.detail, 'code': exc.code},
+                            status=status.HTTP_400_BAD_REQUEST)
+        except inventory_services.InsufficientStock as exc:
+            return Response({'detail': str(exc), 'code': 'insufficient_stock'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        except Customer.DoesNotExist:
+            return Response({'detail': 'Customer not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        # Validate stock and calculate totals
-        items_data = data['items']
-        subtotal = Decimal('0')
-        validated_items = []
-
-        for item_data in items_data:
-            try:
-                variant = ProductVariant.objects.get(pk=item_data['product_variant_id'], is_active=True)
-            except ProductVariant.DoesNotExist:
-                return Response(
-                    {'detail': f'Product variant {item_data["product_variant_id"]} not found.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            if variant.stock_quantity < item_data['quantity']:
-                return Response(
-                    {'detail': f'Insufficient stock for {variant}. Available: {variant.stock_quantity}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            line = item_data['quantity'] * item_data['unit_price']
-            discount = line * (item_data.get('discount_percent', 0) / 100)
-            subtotal += line - discount
-            validated_items.append({'variant': variant, **item_data})
-
-        discount_amount = Decimal(str(data.get('discount_amount', 0)))
-        tax_rate = Decimal(str(getattr(settings, 'TAX_RATE', 0)))
-        taxable = subtotal - discount_amount
-        tax_amount = taxable * tax_rate
-        total_amount = taxable + tax_amount
-
-        paid_amount = Decimal(str(data.get('paid_amount', 0)))
-        if data['sale_type'] == 'cash':
-            paid_amount = total_amount  # cash = full payment
-        elif data['sale_type'] == 'installment':
-            paid_amount = Decimal(str(data.get('down_payment', 0)))
-
-        remaining = max(Decimal('0'), total_amount - paid_amount)
-        change = max(Decimal('0'), paid_amount - total_amount) if data['sale_type'] == 'cash' else Decimal('0')
-
-        # Validate credit limit
-        if data['sale_type'] == 'credit' and customer:
-            if customer.outstanding_balance + remaining > customer.credit_limit:
-                return Response(
-                    {'detail': f'Credit limit exceeded. Available: {customer.available_credit}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        # Create the sale
-        sale = Sale.objects.create(
-            customer=customer,
-            cashier=request.user,
-            sale_type=data['sale_type'],
-            subtotal=subtotal,
-            discount_amount=discount_amount,
-            tax_amount=tax_amount,
-            total_amount=total_amount,
-            paid_amount=paid_amount,
-            change_amount=change,
-            remaining_amount=remaining,
-            notes=data.get('notes', ''),
+        return Response(
+            SaleSerializer(sale, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
         )
 
-        # Create sale items and deduct stock
-        for item in validated_items:
-            variant = item['variant']
-            qty = item['quantity']
-            SaleItem.objects.create(
-                sale=sale,
-                product_variant=variant,
-                quantity=qty,
-                unit_price=item['unit_price'],
-                discount_percent=item.get('discount_percent', 0),
+    def _process_sale(self, request, data):
+        """Create the sale atomically.
+
+        Locking (select_for_update) and stock validation happen *inside* the
+        transaction so both are race-safe: the row locks are held for the whole
+        checkout and a failure rolls the whole sale back.
+        """
+        customer = None
+        if data.get('customer_id'):
+            customer = Customer.objects.get(pk=data['customer_id'])
+
+        with transaction.atomic():
+            # Lock the last sale row so receipt numbers stay sequential.
+            last = Sale.objects.select_for_update().order_by('-number').first()
+            number = (last.number if last else 0) + 1
+
+            lines = []
+            subtotal = Decimal('0')
+            for raw in data['items']:
+                variant = ProductVariant.objects.select_for_update().select_related(
+                    'product', 'color', 'size'
+                ).filter(pk=raw['product_variant_id'], is_active=True,
+                         product__is_active=True).first()
+                if variant is None:
+                    raise inventory_services.InsufficientStock(
+                        f'variant {raw["product_variant_id"]}', 0, raw['quantity']
+                    )
+                if variant.stock_quantity < raw['quantity']:
+                    raise inventory_services.InsufficientStock(
+                        variant, variant.stock_quantity, raw['quantity']
+                    )
+
+                percent = raw.get('discount_percent')
+                percent = Decimal('0') if percent is None else Decimal(str(percent))
+                line_total = Decimal(str(raw['unit_price'])) * raw['quantity']
+                discount = line_total * percent / Decimal('100')
+                subtotal += line_total - discount
+                lines.append({'variant': variant, 'raw': raw, 'net': line_total - discount})
+
+            discount_amount = data.get('discount_amount') or Decimal('0')
+            if discount_amount > subtotal:
+                raise sales_services.PaymentError(
+                    'invalid_discount',
+                    'Discount cannot be greater than the subtotal.')
+            taxable = subtotal - discount_amount
+            tax_rate = Decimal(str(getattr(settings, 'TAX_RATE', 0)))
+            tax_amount = (taxable * tax_rate).quantize(Decimal('0.01'))
+            total = taxable + tax_amount
+
+            cash_amount, card_amount, received, change = sales_services.resolve_payment(
+                data['payment_method'], total,
+                data.get('received_amount') or 0, data.get('card_amount') or 0,
             )
-            # Deduct from stock
-            variant.stock_quantity = max(0, variant.stock_quantity - qty)
-            variant.save()
-            # Update stock item FIFO
-            self._deduct_stock_fifo(variant, qty)
 
-        # Generate receipt
-        Receipt.objects.create(sale=sale)
-
-        # Handle credit customer balance
-        if data['sale_type'] == 'credit' and customer:
-            customer.outstanding_balance += remaining
-            customer.save()
-            CustomerTransaction.objects.create(
+            sale = Sale.objects.create(
+                number=number,
                 customer=customer,
-                transaction_type=CustomerTransaction.TYPE_PURCHASE,
-                amount=total_amount,
-                balance_after=customer.outstanding_balance,
-                sale=sale,
-                recorded_by=request.user,
+                cashier=request.user,
+                payment_method=data['payment_method'],
+                subtotal=subtotal,
+                discount_amount=discount_amount,
+                tax_amount=tax_amount,
+                total_amount=total,
+                cash_amount=cash_amount,
+                card_amount=card_amount,
+                received_amount=received,
+                change_amount=change,
+                notes=data.get('notes', ''),
             )
 
-        # Handle installment plan
-        if data['sale_type'] == 'installment' and customer:
-            installment_count = data['installment_count']
-            monthly = remaining / installment_count
-            plan_start = date.today()
-            plan_end = date(plan_start.year + ((plan_start.month + installment_count - 1) // 12),
-                           ((plan_start.month + installment_count - 1) % 12) + 1, plan_start.day)
+            for line in lines:
+                variant = line['variant']
+                raw = line['raw']
+                SaleItem.objects.create(
+                    sale=sale,
+                    product_variant=variant,
+                    product_name=variant.product.name,
+                    color_name=variant.color.name if variant.color else '',
+                    size_name=variant.size.name if variant.size else '',
+                    quantity=raw['quantity'],
+                    unit_price=raw['unit_price'],
+                    unit_cost=variant.effective_cost,
+                    discount_percent=raw.get('discount_percent') or 0,
+                )
+                inventory_services.sell_stock(variant, raw['quantity'], sale, user=request.user)
 
-            InstallmentPlan.objects.create(
-                sale=sale,
-                customer=customer,
-                total_amount=total_amount,
-                down_payment=paid_amount,
-                remaining_amount=remaining,
-                monthly_installment=monthly,
-                installment_count=installment_count,
-                start_date=plan_start,
-                end_date=plan_end,
-                guarantor_name=data.get('guarantor_name', ''),
-                guarantor_phone=data.get('guarantor_phone', ''),
-                guarantor_id=data.get('guarantor_id', ''),
-            )
-            customer.outstanding_balance += remaining
-            customer.save()
+            Receipt.objects.create(sale=sale, receipt_number=sale.sale_number)
 
-        return Response(SaleSerializer(sale).data, status=status.HTTP_201_CREATED)
+        log_action(AuditLog.ACTION_SALE_CREATED, user=request.user, entity='sale',
+                   entity_id=sale.pk,
+                   details={'number': sale.sale_number, 'total': str(sale.total_amount),
+                            'payment_method': sale.payment_method,
+                            'items': len(lines)})
+        return sale
 
-    def _deduct_stock_fifo(self, variant, quantity):
-        """Deduct stock from oldest batches first (FIFO)."""
-        stock_items = StockItem.objects.filter(
-            product_variant=variant, quantity_in_stock__gt=0, is_active=True
-        ).order_by('import_date')
-
-        remaining = quantity
-        for item in stock_items:
-            if remaining <= 0:
-                break
-            deduct = min(item.quantity_in_stock, remaining)
-            item.quantity_in_stock -= deduct
-            item.quantity_sold += deduct
-            item.save()
-            remaining -= deduct
+    # ── Receipts ────────────────────────────────────────────────────
+    @action(detail=True, methods=['get'])
+    def receipt_data(self, request, pk=None):
+        """Receipt payload for on-screen display / re-print."""
+        sale = self.get_object()
+        return Response({
+            'sale': SaleSerializer(sale, context={'request': request}).data,
+            'business_name': getattr(settings, 'BUSINESS_NAME', 'BrandX'),
+            'currency': getattr(settings, 'CURRENCY_SYMBOL', 'сом'),
+        })
 
     @action(detail=True, methods=['get'])
     def receipt_pdf(self, request, pk=None):
-        """Generate and return PDF receipt for a sale."""
+        """Thermal-printer friendly PDF receipt (80mm)."""
         sale = self.get_object()
-        pdf_buffer = self._generate_receipt_pdf(sale)
+        labels = _labels(request)
+        buffer = self._build_receipt_pdf(sale, labels)
+
         receipt = getattr(sale, 'receipt', None)
         if receipt:
-            receipt.printed_count += 1
-            receipt.save()
-        response = HttpResponse(pdf_buffer.read(), content_type='application/pdf')
-        response['Content-Disposition'] = f'inline; filename="receipt_{sale.sale_number}.pdf"'
+            Receipt.objects.filter(pk=receipt.pk).update(printed_count=receipt.printed_count + 1)
+
+        response = HttpResponse(buffer.read(), content_type='application/pdf')
+        response['Content-Disposition'] = (
+            f'inline; filename="receipt_{sale.sale_number}.pdf"'
+        )
         return response
 
-    def _generate_receipt_pdf(self, sale):
+    def _build_receipt_pdf(self, sale, labels):
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=(8.5 * cm, 21 * cm),
-                                rightMargin=0.5*cm, leftMargin=0.5*cm,
-                                topMargin=0.5*cm, bottomMargin=0.5*cm)
+        doc = SimpleDocTemplate(
+            buffer, pagesize=(8.0 * cm, 24 * cm),
+            rightMargin=0.45 * cm, leftMargin=0.45 * cm,
+            topMargin=0.5 * cm, bottomMargin=0.5 * cm,
+        )
         styles = getSampleStyleSheet()
-        story = []
+        small = ParagraphStyle('small', parent=styles['Normal'], fontSize=7.5, leading=9.5)
+        centre = ParagraphStyle('centre', parent=small, alignment=1)
+        bold = ParagraphStyle('bold', parent=small, fontName='Helvetica-Bold')
 
-        # Header
-        story.append(Paragraph(f'<b>{getattr(settings, "BUSINESS_NAME", "BrandX")}</b>', styles['Title']))
-        story.append(Paragraph('Point of Sale Receipt', styles['Normal']))
-        story.append(Spacer(1, 0.3*cm))
-
-        # Sale info
-        story.append(Paragraph(f'<b>Receipt #:</b> {sale.receipt.receipt_number if hasattr(sale, "receipt") else "N/A"}', styles['Normal']))
-        story.append(Paragraph(f'<b>Invoice #:</b> {sale.sale_number}', styles['Normal']))
-        story.append(Paragraph(f'<b>Date:</b> {sale.created_at.strftime("%Y-%m-%d %H:%M")}', styles['Normal']))
-        story.append(Paragraph(f'<b>Type:</b> {sale.get_sale_type_display()}', styles['Normal']))
+        story = [
+            Paragraph(f"<b>{getattr(settings, 'BUSINESS_NAME', 'BrandX')}</b>",
+                      ParagraphStyle('h', parent=styles['Title'], fontSize=12, alignment=1)),
+            Paragraph(f"{labels['receipt']} №{sale.sale_number}", centre),
+            Spacer(1, 0.15 * cm),
+            Paragraph(f"{labels['date']}: {timezone.localtime(sale.created_at):%d.%m.%Y %H:%M}", small),
+            Paragraph(f"{labels['cashier']}: {sale.cashier.display_name}", small),
+        ]
         if sale.customer:
-            story.append(Paragraph(f'<b>Customer:</b> {sale.customer.name}', styles['Normal']))
-        story.append(Paragraph(f'<b>Cashier:</b> {sale.cashier.get_full_name() or sale.cashier.username}', styles['Normal']))
-        story.append(Spacer(1, 0.3*cm))
+            story.append(Paragraph(f"{labels['customer']}: {sale.customer.name}", small))
+        story.append(Spacer(1, 0.2 * cm))
 
-        # Items table
-        table_data = [['Item', 'Qty', 'Price', 'Total']]
+        rows = [[labels['item'], labels['qty'], labels['sum']]]
         for item in sale.items.all():
-            name = item.product_variant.product.name[:15] if item.product_variant else 'N/A'
-            table_data.append([name, str(item.quantity), f'{item.unit_price:.2f}', f'{item.total_price:.2f}'])
+            variant = ' / '.join(p for p in [item.color_name, item.size_name] if p)
+            name = item.product_name if not variant else f'{item.product_name} ({variant})'
+            rows.append([Paragraph(name, small), str(item.quantity),
+                         f'{item.total_price:.0f}'])
 
-        table = Table(table_data, colWidths=[3.5*cm, 1*cm, 1.5*cm, 1.5*cm])
+        table = Table(rows, colWidths=[4.3 * cm, 1.2 * cm, 1.6 * cm])
         table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('FONTSIZE', (0, 0), (-1, -1), 7.5),
             ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+            ('LINEBELOW', (0, 0), (-1, 0), 0.4, colors.black),
+            ('LINEABOVE', (0, -1), (-1, -1), 0.4, colors.black),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
         ]))
-        story.append(table)
-        story.append(Spacer(1, 0.3*cm))
+        story += [table, Spacer(1, 0.2 * cm)]
 
-        # Totals
-        story.append(Paragraph(f'Subtotal: {sale.subtotal:.2f}', styles['Normal']))
+        def line(label, value, bold_=False):
+            style = bold if bold_ else small
+            return Paragraph(f'<b>{label}</b> {value}' if bold_ else f'{label} {value}', style)
+
         if sale.discount_amount:
-            story.append(Paragraph(f'Discount: -{sale.discount_amount:.2f}', styles['Normal']))
-        if sale.tax_amount:
-            story.append(Paragraph(f'Tax: {sale.tax_amount:.2f}', styles['Normal']))
-        story.append(Paragraph(f'<b>TOTAL: {sale.total_amount:.2f}</b>', styles['Normal']))
-        story.append(Paragraph(f'Paid: {sale.paid_amount:.2f}', styles['Normal']))
+            story.append(line(labels['discount'], f'-{sale.discount_amount:.0f}'))
+        story.append(line(labels['total'], f'{sale.total_amount:.0f}', bold_=True))
+        if sale.cash_amount:
+            story.append(line(labels['cash'], f'{sale.cash_amount:.0f}'))
+        if sale.card_amount:
+            story.append(line(labels['card'], f'{sale.card_amount:.0f}'))
         if sale.change_amount:
-            story.append(Paragraph(f'Change: {sale.change_amount:.2f}', styles['Normal']))
-        if sale.remaining_amount:
-            story.append(Paragraph(f'<b>Remaining: {sale.remaining_amount:.2f}</b>', styles['Normal']))
-
-        story.append(Spacer(1, 0.5*cm))
-        story.append(Paragraph('Thank you for your purchase!', styles['Normal']))
+            story.append(line(labels['change'], f'{sale.change_amount:.0f}'))
+        story += [Spacer(1, 0.35 * cm), Paragraph(labels['thanks'], centre)]
 
         doc.build(story)
         buffer.seek(0)
         return buffer
 
-    @action(detail=False, methods=['get'])
-    def dashboard_stats(self, request):
-        """Sales dashboard statistics."""
-        today = date.today()
-        month_start = today.replace(day=1)
-        year_start = today.replace(month=1, day=1)
+    # ── Returns ─────────────────────────────────────────────────────
+    @action(detail=True, methods=['post'])
+    def return_items(self, request, pk=None):
+        """
+        Return goods from a sale.
 
-        def stats(qs):
-            return qs.aggregate(
-                count=Count('id'),
-                total=Sum('total_amount'),
-                paid=Sum('paid_amount'),
+        The sale itself is never deleted - a SaleReturn document is created,
+        stock goes back on the shelf and the sale status is updated.
+        """
+        sale = self.get_object()
+        serializer = SaleReturnCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        sale_items = {item.pk: item for item in sale.items.all()}
+
+        # Validate everything BEFORE opening the transaction so a bad request
+        # can never leave a half-written return behind.
+        for row in data['items']:
+            item = sale_items.get(row['sale_item'])
+            if item is None:
+                return Response(
+                    {'detail': f'Sale item {row["sale_item"]} not found in this sale.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            remaining = item.quantity - item.returned_quantity
+            if row['quantity'] > remaining:
+                return Response(
+                    {'detail': f'Cannot return {row["quantity"]} of "{item.product_name}" '
+                               f'- only {remaining} left to return.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        with transaction.atomic():
+            sale_return = SaleReturn.objects.create(
+                sale=sale,
+                reason=data.get('reason', 'other'),
+                notes=data.get('notes', ''),
+                created_by=request.user,
             )
+            total = Decimal('0')
+            for row in data['items']:
+                item = sale_items[row['sale_item']]
+                SaleReturnItem.objects.create(
+                    sale_return=sale_return, sale_item=item,
+                    quantity=row['quantity'], unit_price=item.unit_price,
+                )
+                item.returned_quantity += row['quantity']
+                item.save(update_fields=['returned_quantity'])
 
-        today_qs = Sale.objects.filter(created_at__date=today, status='completed')
-        month_qs = Sale.objects.filter(created_at__date__gte=month_start, status='completed')
-        year_qs = Sale.objects.filter(created_at__date__gte=year_start, status='completed')
+                inventory_services.return_stock(
+                    item.product_variant, row['quantity'], sale=sale, user=request.user,
+                    notes=data.get('notes', ''),
+                )
+                total += item.unit_price * row['quantity']
 
-        return Response({
-            'today': stats(today_qs),
-            'this_month': stats(month_qs),
-            'this_year': stats(year_qs),
-            'by_type': {
-                'cash': stats(month_qs.filter(sale_type='cash')),
-                'credit': stats(month_qs.filter(sale_type='credit')),
-                'installment': stats(month_qs.filter(sale_type='installment')),
-            },
-            'outstanding_credit': Customer.objects.filter(
-                customer_type='credit'
-            ).aggregate(total=Sum('outstanding_balance'))['total'] or 0,
-            'outstanding_installment': Customer.objects.filter(
-                customer_type='installment'
-            ).aggregate(total=Sum('outstanding_balance'))['total'] or 0,
-        })
+            sale_return.total_amount = total
+            sale_return.save(update_fields=['total_amount'])
 
+            fully_returned = all(i.returned_quantity >= i.quantity for i in sale.items.all())
+            sale.status = (Sale.STATUS_REFUNDED if fully_returned
+                           else Sale.STATUS_PARTIALLY_REFUNDED)
+            sale.save(update_fields=['status', 'updated_at'])
+
+        log_action(AuditLog.ACTION_SALE_RETURNED, user=request.user, entity='sale',
+                   entity_id=sale.pk,
+                   details={'number': sale.sale_number, 'amount': str(total),
+                            'reason': data.get('reason')})
+        return Response(SaleReturnSerializer(sale_return).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """Cancel a sale (owner only) - stock is put back, the record stays."""
+        sale = self.get_object()
+        if sale.status == Sale.STATUS_CANCELLED:
+            return Response({'detail': 'Sale is already cancelled.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            for item in sale.items.all():
+                pending = item.quantity - item.returned_quantity
+                if pending > 0:
+                    inventory_services.return_stock(
+                        item.product_variant, pending, sale=sale, user=request.user,
+                        reason='correction', notes='Sale cancelled',
+                    )
+            sale.status = Sale.STATUS_CANCELLED
+            sale.save(update_fields=['status', 'updated_at'])
+
+        log_action(AuditLog.ACTION_SALE_RETURNED, user=request.user, entity='sale',
+                   entity_id=sale.pk, details={'number': sale.sale_number, 'op': 'cancel'})
+        return Response(SaleSerializer(sale, context={'request': request}).data)
+
+    # ── Dashboard ───────────────────────────────────────────────────
     @action(detail=False, methods=['get'])
-    def monthly_report(self, request):
-        """Monthly sales breakdown."""
-        year = int(request.query_params.get('year', date.today().year))
-        from django.db.models.functions import TruncMonth
-        data = Sale.objects.filter(
-            created_at__year=year, status='completed'
-        ).annotate(
-            month=TruncMonth('created_at')
-        ).values('month').annotate(
-            total=Sum('total_amount'),
-            count=Count('id')
-        ).order_by('month')
-        return Response(list(data))
+    def dashboard(self, request):
+        """
+        Role-aware dashboard.
+
+        owner   -> full P&L
+        manager -> operational numbers only (no cost / margin / profit)
+        cashier -> own shift totals only
+        """
+        start, end = resolve_period(request.query_params)
+        user = request.user
+
+        if getattr(user, 'is_cashier', False):
+            own = sales_services.sales_in_range(start, end).filter(cashier=user)
+            return Response({
+                'role': user.role,
+                'period': {'start': start, 'end': end},
+                'my_sales': {
+                    'sales_count': own.count(),
+                    'revenue': own.aggregate(t=models.Sum('total_amount'))['t'] or 0,
+                },
+            })
+
+        payload = {
+            'role': user.role,
+            'period': {'start': start, 'end': end},
+            'operational': sales_services.operational_stats(start, end),
+            'top_products': sales_services.top_products(start, end, 5),
+            'chart': sales_services.sales_by_day(start, end) if start and end else [],
+            'low_stock': VariantSearchSerializer(
+                ProductVariant.objects.filter(
+                    is_active=True, product__is_active=True,
+                    stock_quantity__lte=models.F('low_stock_threshold'),
+                ).select_related('product', 'color', 'size').order_by('stock_quantity')[:10],
+                many=True,
+            ).data,
+        }
+
+        if user.can_view_financials:
+            payload['financial'] = sales_services.financial_stats(start, end)
+        else:
+            payload['financial'] = None
+
+        return Response(payload)
+
+
+class SaleReturnViewSet(DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
+    """Return history (read-only - returns are created through the sale)."""
+    queryset = SaleReturn.objects.select_related('sale', 'created_by').prefetch_related(
+        'items__sale_item'
+    ).order_by('-created_at')
+    serializer_class = SaleReturnSerializer
+    filterset_fields = ['sale', 'reason', 'created_by']
+    search_fields = ['sale__number', 'notes']
+    date_field = 'created_at'
+    permission_classes = [IsOwnerOrManager]
+
+    def get_queryset(self):
+        return self.filter_by_period(super().get_queryset())

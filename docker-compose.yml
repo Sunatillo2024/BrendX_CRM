@@ -1,0 +1,65 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: brandx-db
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-brandx}
+      MYSQL_USER: ${DB_USER:-brandx}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-brandx}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-brandx_root}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "${DB_EXPOSED_PORT:-3307}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  backend:
+    build: ./backend
+    container_name: brandx-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-django-insecure-brandx-docker-change-in-production}
+      DEBUG: ${DEBUG:-True}
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-*}"
+      DB_NAME: ${DB_NAME:-brandx}
+      DB_USER: ${DB_USER:-brandx}
+      DB_PASSWORD: ${DB_PASSWORD:-brandx}
+      DB_HOST: db
+      DB_PORT: "3306"
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:4200,http://localhost:8000}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      CURRENCY_CODE: ${CURRENCY_CODE:-KGS}
+      CURRENCY_SYMBOL: ${CURRENCY_SYMBOL:-сом}
+      CURRENCY_LOCALE: ${CURRENCY_LOCALE:-ky-KG}
+      DJANGO_ADMIN_USERNAME: ${DJANGO_ADMIN_USERNAME:-admin}
+      DJANGO_ADMIN_PASSWORD: ${DJANGO_ADMIN_PASSWORD:-1}
+      DJANGO_ADMIN_PIN: ${DJANGO_ADMIN_PIN:-0808}
+      SEED_DATA: ${SEED_DATA:-true}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+    volumes:
+      - media_data:/app/media
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: brandx-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-4200}:80"
+
+volumes:
+  mysql_data:
+  media_data:

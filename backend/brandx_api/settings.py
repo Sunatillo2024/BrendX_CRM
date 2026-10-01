@@ -33,12 +33,15 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
+    'apps.audit.apps.AuditConfig',
     'apps.authentication.apps.AuthenticationConfig',
     'apps.products.apps.ProductsConfig',
     'apps.inventory.apps.InventoryConfig',
     'apps.vendors.apps.VendorsConfig',
     'apps.customers.apps.CustomersConfig',
     'apps.sales.apps.SalesConfig',
+    'apps.finance.apps.FinanceConfig',
+    'apps.reports.apps.ReportsConfig',
     'apps.ai_analysis.apps.AiAnalysisConfig',
 ]
 
@@ -49,6 +52,7 @@ MIDDLEWARE = [
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -76,21 +80,31 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'brandx_api.wsgi.application'
 
-# Database - MySQL Configuration
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': config('DB_NAME', default='brandx'),
-        'USER': config('DB_USER', default='root'),
-        'PASSWORD': config('DB_PASSWORD', default='159632'),
-        'HOST': config('DB_HOST', default='localhost'),
-        'PORT': config('DB_PORT', default='3306'),
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-        },
+# Database - MySQL by default; SQLite is supported for local test runs
+# (set DB_ENGINE=django.db.backends.sqlite3 to avoid needing a MySQL server).
+DB_ENGINE = config('DB_ENGINE', default='django.db.backends.mysql')
+if DB_ENGINE == 'django.db.backends.sqlite3':
+    DATABASES = {
+        'default': {
+            'ENGINE': DB_ENGINE,
+            'NAME': config('DB_NAME', default=':memory:'),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': DB_ENGINE,
+            'NAME': config('DB_NAME', default='brandx'),
+            'USER': config('DB_USER', default='root'),
+            'PASSWORD': config('DB_PASSWORD', default='159632'),
+            'HOST': config('DB_HOST', default='localhost'),
+            'PORT': config('DB_PORT', default='3306'),
+            'OPTIONS': {
+                'charset': 'utf8mb4',
+                'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            },
+        }
+    }
 
 # Custom User Model
 AUTH_USER_MODEL = 'authentication.User'
@@ -103,10 +117,19 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+LANGUAGE_CODE = 'uz'
+TIME_ZONE = 'Asia/Tashkent'
 USE_I18N = True
 USE_TZ = True
+
+# UI languages: Uzbek + Russian only (English is not offered).
+from django.utils.translation import gettext_lazy as _  # noqa: E402
+
+LANGUAGES = [
+    ('uz', _('Uzbek')),
+    ('ru', _('Russian')),
+]
+LOCALE_PATHS = [BASE_DIR / 'locale']
 
 # Static & Media Files
 STATIC_URL = '/static/'
@@ -170,6 +193,25 @@ GROQ_API_KEY = config('GROQ_API_KEY', default='')
 AI_MODEL = 'llama3-8b-8192'
 
 # Business Settings
-BUSINESS_NAME = 'BrandX'
-CURRENCY_SYMBOL = '$'
+BUSINESS_NAME = config('BUSINESS_NAME', default='BrandX')
+CURRENCY_CODE = config('CURRENCY_CODE', default='KGS')
+CURRENCY_SYMBOL = config('CURRENCY_SYMBOL', default='сом')
+CURRENCY_LOCALE = config('CURRENCY_LOCALE', default='ky-KG')
+DEFAULT_LANGUAGE = config('DEFAULT_LANGUAGE', default='uz')   # 'uz' | 'ru'
+SUPPORTED_LANGUAGES = ['uz', 'ru']
 TAX_RATE = 0.0  # Set to your local tax rate (e.g., 0.15 for 15%)
+
+# PIN login security
+PIN_MIN_LENGTH = 4
+PIN_MAX_LENGTH = 8
+PIN_MAX_ATTEMPTS = 5           # failed attempts before temporary lock
+PIN_LOCKOUT_SECONDS = 300      # lock duration after too many failures
+
+# LocMem cache is per-process; kept for lightweight use only.
+# PIN throttling is backed by the database so it works across gunicorn workers.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'brandx',
+    }
+}

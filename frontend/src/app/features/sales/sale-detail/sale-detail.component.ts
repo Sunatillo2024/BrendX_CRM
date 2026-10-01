@@ -1,208 +1,265 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ActivatedRoute, RouterLink } from '@angular/router';
-import { MatButtonModule } from '@angular/material/button';
+import { Component, OnInit, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
-import { MatCardModule } from '@angular/material/card';
-import { MatTableModule } from '@angular/material/table';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatTooltipModule } from '@angular/material/tooltip';
-import { ApiService } from '../../../core/services/api.service';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { MoneyPipe, TranslatePipe } from '../../../core/i18n/translate.pipe';
+import { TranslationService } from '../../../core/i18n/translation.service';
 import { Sale } from '../../../core/models/models';
+import { ApiService } from '../../../core/services/api.service';
+import { AuthService } from '../../../core/services/auth.service';
+import { ConfirmService } from '../../../core/ui/confirm.service';
+import { ToastService } from '../../../core/ui/toast.service';
 
 @Component({
   selector: 'app-sale-detail',
   standalone: true,
-  imports: [
-    CommonModule, RouterLink,
-    MatButtonModule, MatIconModule, MatCardModule,
-    MatTableModule, MatProgressBarModule, MatTooltipModule,
-  ],
+  imports: [CommonModule, FormsModule, RouterLink, MatIconModule, TranslatePipe, MoneyPipe],
   template: `
-    <div class="page-container">
-      <div class="page-header">
-        <div>
-          <h1>Sale {{ sale()?.sale_number }}</h1>
-          @if (sale()) {
-            <p style="color:#888;margin:0">{{ sale()!.created_at | date:'full' }}</p>
-          }
-        </div>
-        <div style="display:flex;gap:8px">
-          @if (sale()) {
-            <button mat-stroked-button (click)="printReceipt()" matTooltip="Print Receipt">
-              <mat-icon>print</mat-icon> Receipt
+    <div class="page-head">
+      <h1 class="page-title">
+        {{ 'sales.detail' | t }}
+        @if (sale(); as s) { <span class="muted">№{{ s.sale_number }}</span> }
+      </h1>
+      <div class="btn-row">
+        <a class="btn" routerLink="/sales">{{ 'common.back' | t }}</a>
+        @if (sale(); as s) {
+          <button class="btn primary" (click)="printReceipt(s.id)">
+            <mat-icon>print</mat-icon> {{ 'common.print' | t }}
+          </button>
+          @if (auth.isManager() && s.status !== 'refunded' && s.status !== 'cancelled') {
+            <button class="btn" (click)="showReturn = !showReturn">
+              <mat-icon>assignment_return</mat-icon> {{ 'sales.return' | t }}
             </button>
           }
-          <button mat-stroked-button routerLink="/sales">
-            <mat-icon>arrow_back</mat-icon> Back
-          </button>
-        </div>
+          @if (auth.isOwner() && s.status !== 'cancelled') {
+            <button class="btn danger" (click)="cancelSale(s.id)">
+              <mat-icon>cancel</mat-icon> {{ 'sales.cancel' | t }}
+            </button>
+          }
+        }
       </div>
+    </div>
 
-      @if (loading) { <mat-progress-bar mode="indeterminate" style="border-radius:4px;margin-bottom:16px" /> }
+    <div class="page-body">
+      @if (sale(); as s) {
+        <div class="grid grid-2">
+          <div class="card">
+            <h3 class="card-title">{{ 'common.total' | t }}</h3>
+            <div class="kv"><span class="muted">{{ 'sales.cashier' | t }}</span>
+              <b>{{ s.cashier_name }}</b></div>
+            <div class="kv"><span class="muted">{{ 'common.date' | t }}</span>
+              <b>{{ s.created_at | date: 'dd.MM.yyyy HH:mm' }}</b></div>
+            <div class="kv"><span class="muted">{{ 'common.customer' | t }}</span>
+              <b>{{ s.customer_name || '—' }}</b></div>
+            <div class="kv"><span class="muted">{{ 'sales.paymentMethod' | t }}</span>
+              <span class="badge info">{{ ('payment.' + s.payment_method) | t }}</span></div>
+            <div class="kv"><span class="muted">{{ 'common.status' | t }}</span>
+              <span class="badge"
+                    [class.success]="s.status === 'completed'"
+                    [class.danger]="s.status === 'refunded' || s.status === 'cancelled'">
+                {{ ('sales.status.' + s.status) | t }}
+              </span></div>
+          </div>
 
-      @if (sale()) {
-        <!-- Sale Summary Cards -->
-        <div class="summary-grid">
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Type</div>
-              <div><span [class]="'badge ' + typeBadge(sale()!.sale_type)">{{ sale()!.sale_type }}</span></div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Status</div>
-              <div><span [class]="'badge ' + statusBadge(sale()!.status)">{{ sale()!.status }}</span></div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Customer</div>
-              <div class="stat-value">{{ sale()!.customer_name || 'Walk-in' }}</div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Cashier</div>
-              <div class="stat-value">{{ sale()!.cashier_name }}</div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Subtotal</div>
-              <div class="stat-value">{{ sale()!.subtotal | currency }}</div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Discount</div>
-              <div class="stat-value">{{ sale()!.discount_amount | currency }}</div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Total</div>
-              <div class="stat-value fw-700" style="color:#0f172a">{{ sale()!.total_amount | currency }}</div>
-            </mat-card-content>
-          </mat-card>
-          <mat-card>
-            <mat-card-content>
-              <div class="stat-label">Paid</div>
-              <div class="stat-value text-success">{{ sale()!.paid_amount | currency }}</div>
-            </mat-card-content>
-          </mat-card>
-          @if (sale()!.remaining_amount > 0) {
-            <mat-card>
-              <mat-card-content>
-                <div class="stat-label">Remaining</div>
-                <div class="stat-value text-danger fw-700">{{ sale()!.remaining_amount | currency }}</div>
-              </mat-card-content>
-            </mat-card>
+          <div class="card">
+            <h3 class="card-title">{{ 'common.total' | t }}</h3>
+            <div class="kv"><span class="muted">{{ 'common.total' | t }}</span>
+              <b class="big">{{ s.total_amount | money }}</b></div>
+            <div class="kv"><span class="muted">{{ 'dashboard.cash' | t }}</span>
+              <span>{{ s.cash_amount | money }}</span></div>
+            <div class="kv"><span class="muted">{{ 'dashboard.card' | t }}</span>
+              <span>{{ s.card_amount | money }}</span></div>
+            <div class="kv"><span class="muted">{{ 'sales.received' | t }}</span>
+              <span>{{ s.received_amount | money }}</span></div>
+            <div class="kv"><span class="muted">{{ 'sales.change' | t }}</span>
+              <b>{{ s.change_amount | money }}</b></div>
+            @if (s.profit != null) {
+              <div class="kv" style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px">
+                <span class="muted">{{ 'profit.grossProfit' | t }}</span>
+                <b class="positive">{{ s.profit | money }}</b>
+              </div>
+            }
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3 class="card-title">{{ 'sales.itemsCount' | t }}</h3>
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>{{ 'common.product' | t }}</th>
+                  <th>{{ 'common.color' | t }}</th>
+                  <th>{{ 'common.size' | t }}</th>
+                  <th class="num">{{ 'common.quantity' | t }}</th>
+                  <th class="num">{{ 'common.price' | t }}</th>
+                  <th class="num">{{ 'common.sum' | t }}</th>
+                  <th class="num">{{ 'sales.returnedQty' | t }}</th>
+                  @if (showReturn) { <th></th> }
+                </tr>
+              </thead>
+              <tbody>
+                @for (item of s.items; track item.id) {
+                  <tr>
+                    <td class="strong">{{ item.product_name }}</td>
+                    <td>{{ item.color_name || '—' }}</td>
+                    <td>{{ item.size_name || '—' }}</td>
+                    <td class="num">{{ item.quantity }}</td>
+                    <td class="num">{{ item.unit_price | money }}</td>
+                    <td class="num strong">{{ item.total_price | money }}</td>
+                    <td class="num">{{ item.returned_quantity }}</td>
+                    @if (showReturn) {
+                      <td class="num">
+                        <input class="input" style="width:80px;text-align:right" type="number"
+                               min="0" [max]="item.quantity - item.returned_quantity"
+                               [name]="'r' + item.id" [(ngModel)]="returnQty[item.id]"
+                               [disabled]="item.returned_quantity >= item.quantity">
+                      </td>
+                    }
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+
+          @if (showReturn) {
+            <div class="return-box">
+              <div class="field">
+                <label class="field-label">{{ 'sales.returnReason' | t }}</label>
+                <select class="select" [(ngModel)]="returnReason" name="reason">
+                  <option value="size">{{ 'sales.reason.size' | t }}</option>
+                  <option value="defect">{{ 'sales.reason.defect' | t }}</option>
+                  <option value="change_mind">{{ 'sales.reason.change_mind' | t }}</option>
+                  <option value="other">{{ 'sales.reason.other' | t }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label">{{ 'finance.comment' | t }}</label>
+                <input class="input" [(ngModel)]="returnNotes" name="notes">
+              </div>
+              <button class="btn primary" (click)="submitReturn(s.id)">
+                <mat-icon>assignment_return</mat-icon> {{ 'common.confirm' | t }}
+              </button>
+            </div>
           }
         </div>
 
-        <!-- Receipt Info -->
-        @if (sale()!.receipt) {
-          <div class="receipt-banner">
-            <mat-icon style="color:#10b981">receipt_long</mat-icon>
-            <span>Receipt <strong>{{ sale()!.receipt!.receipt_number }}</strong> generated on {{ sale()!.receipt!.generated_at | date:'medium' }}</span>
+        @if (s.returns.length) {
+          <div class="card" style="margin-top:16px">
+            <h3 class="card-title">{{ 'sales.returned' | t }}</h3>
+            @for (ret of s.returns; track ret.id) {
+              <div class="return-row">
+                <div>
+                  <span class="badge warn">{{ ('sales.reason.' + ret.reason) | t }}</span>
+                  <span class="small muted" style="margin-left:8px">
+                    {{ ret.created_at | date: 'dd.MM.yyyy HH:mm' }} ·
+                    {{ ret.created_by_name || '—' }}
+                  </span>
+                </div>
+                <b>{{ ret.total_amount | money }}</b>
+                <div class="small muted">
+                  @for (line of ret.items; track line.id) {
+                    <span>{{ line.product_name }} ×{{ line.quantity }}</span>
+                    @if (!$last) { <span>, </span> }
+                  }
+                </div>
+              </div>
+            }
           </div>
-        }
-
-        <!-- Sale Items Table (sale_items) -->
-        <mat-card style="margin-top:20px">
-          <mat-card-header>
-            <mat-card-title>
-              <mat-icon style="color:#6366f1;vertical-align:middle;margin-right:6px">shopping_cart</mat-icon>
-              Sale Items ({{ sale()!.items.length }})
-            </mat-card-title>
-          </mat-card-header>
-          <mat-card-content style="padding-top:8px">
-            <div class="data-table-container" style="border:none;box-shadow:none">
-              <table mat-table [dataSource]="sale()!.items" style="width:100%">
-                <ng-container matColumnDef="product">
-                  <th mat-header-cell *matHeaderCellDef>Product</th>
-                  <td mat-cell *matCellDef="let item">
-                    <div class="fw-600" style="color:#0f172a">{{ item.product_name }}</div>
-                    <div style="font-size:12px;color:#94a3b8">{{ item.variant_display }}</div>
-                  </td>
-                </ng-container>
-                <ng-container matColumnDef="quantity">
-                  <th mat-header-cell *matHeaderCellDef>Qty</th>
-                  <td mat-cell *matCellDef="let item" class="fw-600">{{ item.quantity }}</td>
-                </ng-container>
-                <ng-container matColumnDef="unit_price">
-                  <th mat-header-cell *matHeaderCellDef>Unit Price</th>
-                  <td mat-cell *matCellDef="let item">{{ item.unit_price | currency }}</td>
-                </ng-container>
-                <ng-container matColumnDef="discount">
-                  <th mat-header-cell *matHeaderCellDef>Discount</th>
-                  <td mat-cell *matCellDef="let item">
-                    @if (item.discount_percent > 0) {
-                      <span class="badge badge-warning">{{ item.discount_percent }}%</span>
-                      <span style="font-size:12px;color:#94a3b8;margin-left:4px">(-{{ item.discount_amount | currency }})</span>
-                    } @else {
-                      <span class="text-muted">&mdash;</span>
-                    }
-                  </td>
-                </ng-container>
-                <ng-container matColumnDef="total_price">
-                  <th mat-header-cell *matHeaderCellDef>Total</th>
-                  <td mat-cell *matCellDef="let item" class="fw-600" style="color:#0f172a">{{ item.total_price | currency }}</td>
-                </ng-container>
-                <tr mat-header-row *matHeaderRowDef="itemCols"></tr>
-                <tr mat-row *matRowDef="let row; columns: itemCols;"></tr>
-              </table>
-            </div>
-          </mat-card-content>
-        </mat-card>
-
-        @if (sale()!.notes) {
-          <mat-card style="margin-top:16px">
-            <mat-card-content>
-              <div style="font-size:13px;color:#64748b"><strong>Notes:</strong> {{ sale()!.notes }}</div>
-            </mat-card-content>
-          </mat-card>
         }
       }
     </div>
   `,
   styles: [`
-    .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .stat-label { font-size: 11px; color: #94a3b8; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
-    .stat-value { font-size: 16px; font-weight: 600; color: #0f172a; }
-    .fw-700 { font-weight: 700; }
-    .receipt-banner {
-      display: flex; align-items: center; gap: 10px; padding: 12px 16px;
-      background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;
-      font-size: 13px; color: #166534;
+    .kv {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13.5px;
+      &:last-child { border-bottom: none; }
     }
-  `]
+    .big { font-size: 19px; color: var(--primary); }
+    .return-box {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px; align-items: end; margin-top: 14px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .return-row {
+      display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      &:last-child { border-bottom: none; }
+    }
+  `],
 })
 export class SaleDetailComponent implements OnInit {
   private api = inject(ApiService);
   private route = inject(ActivatedRoute);
+  private toast = inject(ToastService);
+  private confirm = inject(ConfirmService);
+  private i18n = inject(TranslationService);
+  auth = inject(AuthService);
 
   sale = signal<Sale | null>(null);
-  loading = false;
-  itemCols = ['product', 'quantity', 'unit_price', 'discount', 'total_price'];
+  showReturn = false;
+  returnQty: Record<number, number> = {};
+  returnReason = 'size';
+  returnNotes = '';
+
+  private saleId = 0;
 
   ngOnInit() {
-    const id = +this.route.snapshot.params['id'];
-    this.loading = true;
-    this.api.getSale(id).subscribe({
-      next: (s) => { this.sale.set(s); this.loading = false; },
-      error: () => this.loading = false,
+    this.saleId = Number(this.route.snapshot.paramMap.get('id'));
+    this.load();
+  }
+
+  load() {
+    this.api.getSale(this.saleId).subscribe(sale => {
+      this.sale.set(sale);
+      this.returnQty = {};
+      (sale.items ?? []).forEach(item => (this.returnQty[item.id] = 0));
     });
   }
 
-  printReceipt() {
-    const id = this.sale()?.id;
-    if (!id) return;
-    this.api.getReceiptPdf(id).subscribe(blob => window.open(URL.createObjectURL(blob), '_blank'));
+  printReceipt(id: number) {
+    window.open(this.api.getReceiptPdfUrl(id, this.i18n.lang()), '_blank');
   }
 
-  typeBadge(t: string) { return { cash: 'badge-success', credit: 'badge-warning', installment: 'badge-accent' }[t] || 'badge-default'; }
-  statusBadge(s: string) { return { completed: 'badge-success', pending: 'badge-warning', cancelled: 'badge-danger', refunded: 'badge-default' }[s] || 'badge-default'; }
+  submitReturn(saleId: number) {
+    const items = Object.entries(this.returnQty)
+      .filter(([, qty]) => Number(qty) > 0)
+      .map(([id, qty]) => ({ sale_item: Number(id), quantity: Number(qty) }));
+
+    if (!items.length) {
+      this.toast.warn(this.i18n.t('sales.noReturnItems'));
+      return;
+    }
+
+    this.api.returnItems(saleId, {
+      reason: this.returnReason,
+      notes: this.returnNotes,
+      items,
+    }).subscribe({
+      next: () => {
+        this.showReturn = false;
+        this.returnNotes = '';
+        this.toast.success(this.i18n.t('sales.returnDone'));
+        this.load();
+      },
+      error: err => this.toast.error(err.error?.detail || this.i18n.t('common.error')),
+    });
+  }
+
+  async cancelSale(saleId: number) {
+    const approved = await this.confirm.confirm({
+      title: this.i18n.t('sales.cancel'),
+      message: this.i18n.t('sales.cancelConfirm'),
+      confirmLabel: this.i18n.t('sales.cancel'),
+      danger: true,
+    });
+    if (!approved) return;
+
+    this.api.cancelSale(saleId).subscribe({
+      next: () => { this.toast.success(this.i18n.t('common.saved')); this.load(); },
+      error: err => this.toast.error(err.error?.detail || this.i18n.t('common.error')),
+    });
+  }
 }

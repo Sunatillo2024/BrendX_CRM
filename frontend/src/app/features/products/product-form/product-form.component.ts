@@ -1,285 +1,360 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
-import { Router, ActivatedRoute } from '@angular/router';
-import { MatCardModule } from '@angular/material/card';
-import { MatButtonModule } from '@angular/material/button';
+import { Component, OnInit, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
-import { MatInputModule } from '@angular/material/input';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatSelectModule } from '@angular/material/select';
-import { MatCheckboxModule } from '@angular/material/checkbox';
-import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatDividerModule } from '@angular/material/divider';
-import { MatTableModule } from '@angular/material/table';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { TranslatePipe } from '../../../core/i18n/translate.pipe';
+import { TranslationService } from '../../../core/i18n/translation.service';
+import { Category, Color, Product, Size, VariantWrite } from '../../../core/models/models';
 import { ApiService } from '../../../core/services/api.service';
-import { Category, Color, Size, Product } from '../../../core/models/models';
+import { AuthService } from '../../../core/services/auth.service';
+import { ToastService } from '../../../core/ui/toast.service';
 
 @Component({
   selector: 'app-product-form',
   standalone: true,
-  imports: [
-    CommonModule, FormsModule, ReactiveFormsModule,
-    MatCardModule, MatButtonModule, MatIconModule, MatInputModule,
-    MatFormFieldModule, MatSelectModule, MatCheckboxModule,
-    MatSnackBarModule, MatProgressBarModule, MatDividerModule, MatTableModule,
-  ],
+  imports: [CommonModule, FormsModule, RouterLink, MatIconModule, TranslatePipe],
   template: `
-    <div class="page-container">
-      <div class="page-header">
-        <h1>{{ isEdit ? 'Edit' : 'Add' }} Product</h1>
-        <button mat-stroked-button routerLink="/products">
-          <mat-icon>arrow_back</mat-icon> Back
-        </button>
+    <div class="page-head">
+      <h1 class="page-title">
+        {{ (isEdit ? 'products.edit' : 'products.new') | t }}
+      </h1>
+      <a class="btn" routerLink="/products">{{ 'common.back' | t }}</a>
+    </div>
+
+    <div class="page-body">
+      <div class="card">
+        <h3 class="card-title">{{ 'common.product' | t }}</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-label">{{ 'products.name' | t }} *</label>
+            <input class="input" [(ngModel)]="model.name" name="name">
+          </div>
+
+          <div class="field">
+            <label class="field-label">{{ 'common.category' | t }}</label>
+            <select class="select" [(ngModel)]="model.category" name="category">
+              <option [ngValue]="null">—</option>
+              @for (c of categories(); track c.id) {
+                <option [ngValue]="c.id">{{ c.name }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="field-label">{{ 'products.barcode' | t }}</label>
+            <input class="input" [(ngModel)]="model.barcode" name="barcode"
+                   [placeholder]="'common.optional' | t">
+          </div>
+
+          <div class="field">
+            <label class="field-label">{{ 'products.sellingPrice' | t }} *</label>
+            <input class="input" type="number" [(ngModel)]="model.base_selling_price"
+                   name="price">
+          </div>
+
+          @if (auth.canViewFinancials()) {
+            <div class="field">
+              <label class="field-label">{{ 'products.costPrice' | t }}</label>
+              <input class="input" type="number" [(ngModel)]="model.base_cost_price"
+                     name="cost">
+            </div>
+          }
+
+          <div class="field">
+            <label class="field-label">{{ 'products.lowStock' | t }}</label>
+            <input class="input" type="number" [(ngModel)]="model.low_stock_threshold"
+                   name="threshold">
+          </div>
+
+          <div class="field">
+            <label class="field-label">{{ 'common.status' | t }}</label>
+            <select class="select" [(ngModel)]="model.is_active" name="active">
+              <option [ngValue]="true">{{ 'common.active' | t }}</option>
+              <option [ngValue]="false">{{ 'common.inactive' | t }}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field" style="margin-top:14px">
+          <label class="field-label">{{ 'products.description' | t }}</label>
+          <textarea class="textarea" [(ngModel)]="model.description" name="description"></textarea>
+        </div>
       </div>
 
-      @if (loading) { <mat-progress-bar mode="indeterminate" /> }
+      <!-- Variants -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-title-row">
+          <h3 class="card-title">{{ 'products.variants' | t }}</h3>
+          <button class="btn sm" (click)="addVariant()">
+            <mat-icon>add</mat-icon> {{ 'products.addVariant' | t }}
+          </button>
+        </div>
 
-      <div class="form-layout">
-        <mat-card class="form-card">
-          <mat-card-header><mat-card-title>Product Details</mat-card-title></mat-card-header>
-          <mat-card-content>
-            <form [formGroup]="form" (ngSubmit)="save()" class="product-form">
-              <div class="form-row">
-                <mat-form-field appearance="outline">
-                  <mat-label>Product Name *</mat-label>
-                  <input matInput formControlName="name">
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Barcode *</mat-label>
-                  <input matInput formControlName="barcode">
-                  <mat-icon matSuffix>qr_code</mat-icon>
-                </mat-form-field>
-              </div>
-              <div class="form-row">
-                <mat-form-field appearance="outline">
-                  <mat-label>Category</mat-label>
-                  <mat-select formControlName="category">
-                    <mat-option [value]="null">No Category</mat-option>
-                    @for (cat of categories(); track cat.id) {
-                      <mat-option [value]="cat.id">{{ cat.name }}</mat-option>
-                    }
-                  </mat-select>
-                </mat-form-field>
-              </div>
-              <div class="form-row">
-                <mat-form-field appearance="outline">
-                  <mat-label>Cost Price</mat-label>
-                  <input matInput type="number" formControlName="base_cost_price" min="0">
-                  <mat-icon matPrefix>attach_money</mat-icon>
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Selling Price *</mat-label>
-                  <input matInput type="number" formControlName="base_selling_price" min="0">
-                  <mat-icon matPrefix>sell</mat-icon>
-                </mat-form-field>
-              </div>
-              <mat-form-field appearance="outline" style="width:100%">
-                <mat-label>Description</mat-label>
-                <textarea matInput formControlName="description" rows="3"></textarea>
-              </mat-form-field>
-
-              <!-- Product Image Upload -->
-              <div class="image-upload">
-                <label>Product Image</label>
-                <div class="upload-area" (click)="fileInput.click()">
-                  @if (imagePreview()) {
-                    <img [src]="imagePreview()" alt="Preview">
-                  } @else {
-                    <mat-icon>add_photo_alternate</mat-icon>
-                    <span>Click to upload image</span>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>{{ 'common.color' | t }}</th>
+                <th>{{ 'common.size' | t }}</th>
+                <th>{{ 'products.barcode' | t }}</th>
+                @if (auth.canViewFinancials()) {
+                  <th class="num">{{ 'products.costPrice' | t }}</th>
+                }
+                <th class="num">{{ 'products.sellingPrice' | t }}</th>
+                <th class="num">{{ 'products.stock' | t }}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (v of variants; track $index) {
+                <tr>
+                  <td>
+                    <select class="select" [(ngModel)]="v.color" [name]="'color' + $index">
+                      <option [ngValue]="null">—</option>
+                      @for (c of colors(); track c.id) {
+                        <option [ngValue]="c.id">{{ c.name }}</option>
+                      }
+                    </select>
+                  </td>
+                  <td>
+                    <select class="select" [(ngModel)]="v.size" [name]="'size' + $index">
+                      <option [ngValue]="null">—</option>
+                      @for (s of sizes(); track s.id) {
+                        <option [ngValue]="s.id">{{ s.name }}</option>
+                      }
+                    </select>
+                  </td>
+                  <td>
+                    <input class="input" [(ngModel)]="v.barcode" [name]="'barcode' + $index"
+                           [placeholder]="'common.optional' | t">
+                  </td>
+                  @if (auth.canViewFinancials()) {
+                    <td>
+                      <input class="input" type="number" [(ngModel)]="v.cost_price"
+                             [name]="'vcost' + $index">
+                    </td>
                   }
-                </div>
-                <input #fileInput type="file" accept="image/*" (change)="onImageChange($event)" hidden>
-              </div>
-
-              <mat-checkbox formControlName="is_active">Product is Active</mat-checkbox>
-
-              <div class="form-actions">
-                <button mat-raised-button color="primary" type="submit" [disabled]="form.invalid || saving">
-                  @if (saving) { Saving... } @else { Save Product }
-                </button>
-              </div>
-            </form>
-          </mat-card-content>
-        </mat-card>
-
-        <!-- Variants Card -->
-        @if (isEdit && product()) {
-          <mat-card class="form-card">
-            <mat-card-header>
-              <mat-card-title>Product Variants (Size & Color)</mat-card-title>
-            </mat-card-header>
-            <mat-card-content>
-              <div class="variant-add">
-                <mat-form-field appearance="outline">
-                  <mat-label>Color</mat-label>
-                  <mat-select [(ngModel)]="newVariantColor">
-                    <mat-option [value]="null">No Color</mat-option>
-                    @for (c of colors(); track c.id) {
-                      <mat-option [value]="c.id">
-                        <span class="color-swatch" [style.background]="c.hex_code"></span>{{ c.name }}
-                      </mat-option>
-                    }
-                  </mat-select>
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Size</mat-label>
-                  <mat-select [(ngModel)]="newVariantSize">
-                    <mat-option [value]="null">No Size</mat-option>
-                    @for (s of sizes(); track s.id) {
-                      <mat-option [value]="s.id">{{ s.name }}</mat-option>
-                    }
-                  </mat-select>
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>SKU</mat-label>
-                  <input matInput [(ngModel)]="newVariantSku">
-                </mat-form-field>
-                <mat-form-field appearance="outline">
-                  <mat-label>Barcode</mat-label>
-                  <input matInput [(ngModel)]="newVariantBarcode">
-                </mat-form-field>
-                <button mat-raised-button color="accent" (click)="addVariant()">
-                  <mat-icon>add</mat-icon> Add Variant
-                </button>
-              </div>
-
-              @if (product()?.variants?.length) {
-                <table mat-table [dataSource]="product()!.variants">
-                  <ng-container matColumnDef="color">
-                    <th mat-header-cell *matHeaderCellDef>Color</th>
-                    <td mat-cell *matCellDef="let v">{{ v.color_detail?.name || '—' }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="size">
-                    <th mat-header-cell *matHeaderCellDef>Size</th>
-                    <td mat-cell *matCellDef="let v">{{ v.size_detail?.name || '—' }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="sku">
-                    <th mat-header-cell *matHeaderCellDef>SKU</th>
-                    <td mat-cell *matCellDef="let v">{{ v.sku }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="barcode">
-                    <th mat-header-cell *matHeaderCellDef>Barcode</th>
-                    <td mat-cell *matCellDef="let v">{{ v.barcode }}</td>
-                  </ng-container>
-                  <ng-container matColumnDef="stock">
-                    <th mat-header-cell *matHeaderCellDef>Stock</th>
-                    <td mat-cell *matCellDef="let v">{{ v.stock_quantity }}</td>
-                  </ng-container>
-                  <tr mat-header-row *matHeaderRowDef="variantColumns"></tr>
-                  <tr mat-row *matRowDef="let row; columns: variantColumns;"></tr>
-                </table>
+                  <td>
+                    <input class="input" type="number" [(ngModel)]="v.selling_price"
+                           [name]="'vprice' + $index">
+                  </td>
+                  <td>
+                    <input class="input" type="number" [(ngModel)]="v.stock_quantity"
+                           [name]="'vstock' + $index">
+                  </td>
+                  <td class="num">
+                    <button class="btn sm danger" (click)="removeVariant($index)">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </td>
+                </tr>
               }
-            </mat-card-content>
-          </mat-card>
-        }
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Inline colour/size creation -->
+        <div class="inline-add">
+          <input class="input" style="width:150px" [(ngModel)]="newColor" name="newColor"
+                 [placeholder]="'common.color' | t">
+          <button class="btn sm" (click)="createColor()">
+            <mat-icon>add</mat-icon> {{ 'common.add' | t }}
+          </button>
+
+          <input class="input" style="width:130px" [(ngModel)]="newSize" name="newSize"
+                 [placeholder]="'common.size' | t">
+          <select class="select" style="width:150px" [(ngModel)]="newSizeType" name="sizeType">
+            @for (t of sizeTypes; track t) {
+              <option [value]="t">{{ t }}</option>
+            }
+          </select>
+          <button class="btn sm" (click)="createSize()">
+            <mat-icon>add</mat-icon> {{ 'common.add' | t }}
+          </button>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-top:18px">
+        <button class="btn primary" [disabled]="saving" (click)="save()">
+          <mat-icon>save</mat-icon> {{ 'common.save' | t }}
+        </button>
+        <a class="btn" routerLink="/products">{{ 'common.cancel' | t }}</a>
       </div>
     </div>
   `,
   styles: [`
-    .form-layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
-    .form-card { }
-    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .product-form { display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
-    .image-upload { label { font-size: 14px; color: #666; display: block; margin-bottom: 8px; } }
-    .upload-area { border: 2px dashed #ccc; border-radius: 8px; padding: 24px; text-align: center; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 120px; justify-content: center; &:hover { border-color: #3f51b5; } img { max-height: 150px; max-width: 200px; object-fit: contain; } mat-icon { font-size: 40px; color: #bbb; } }
-    .form-actions { display: flex; justify-content: flex-end; }
-    .variant-add { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
-    .color-swatch { display: inline-block; width: 16px; height: 16px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
-  `]
+    .card-title-row { display: flex; align-items: center; justify-content: space-between; }
+    .inline-add {
+      display: flex; gap: 9px; align-items: center; flex-wrap: wrap;
+      margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+    }
+  `],
 })
 export class ProductFormComponent implements OnInit {
   private api = inject(ApiService);
-  private fb = inject(FormBuilder);
-  private router = inject(Router);
   private route = inject(ActivatedRoute);
-  private snackBar = inject(MatSnackBar);
+  private router = inject(Router);
+  private toast = inject(ToastService);
+  private i18n = inject(TranslationService);
+  auth = inject(AuthService);
 
-  isEdit = false;
-  loading = false;
-  saving = false;
-  product = signal<Product | null>(null);
   categories = signal<Category[]>([]);
   colors = signal<Color[]>([]);
   sizes = signal<Size[]>([]);
-  imagePreview = signal<string | null>(null);
-  selectedFile: File | null = null;
 
-  newVariantColor: number | null = null;
-  newVariantSize: number | null = null;
-  newVariantSku = '';
-  newVariantBarcode = '';
-  variantColumns = ['color', 'size', 'sku', 'barcode', 'stock'];
+  readonly sizeTypes = ['letter', 'numeric', 'age', 'universal'];
 
-  form: FormGroup = this.fb.group({
-    name: ['', Validators.required],
-    barcode: ['', Validators.required],
-    category: [null],
-    base_cost_price: [0, [Validators.min(0)]],
-    base_selling_price: [0, [Validators.required, Validators.min(0)]],
-    description: [''],
-    is_active: [true],
-  });
+  isEdit = false;
+  saving = false;
+  productId: number | null = null;
+
+  newColor = '';
+  newSize = '';
+  newSizeType = 'letter';
+
+  model: any = {
+    name: '',
+    category: null,
+    barcode: '',
+    base_selling_price: 0,
+    base_cost_price: 0,
+    low_stock_threshold: 5,
+    is_active: true,
+    description: '',
+  };
+
+  variants: VariantWrite[] = [];
 
   ngOnInit() {
-    const id = this.route.snapshot.params['id'];
-    if (id) { this.isEdit = true; this.loadProduct(+id); }
-    this.api.getAllCategories().subscribe(cats => this.categories.set(cats));
-    this.api.getColors().subscribe(r => this.colors.set(r.results));
-    this.api.getSizes().subscribe(r => this.sizes.set(r.results));
-  }
+    this.api.getCategories({ page_size: 200 }).subscribe(r => this.categories.set(r.results));
+    this.loadColors();
+    this.loadSizes();
 
-  loadProduct(id: number) {
-    this.loading = true;
-    this.api.getProduct(id).subscribe({
-      next: (p) => { this.product.set(p); this.form.patchValue(p); if (p.image) this.imagePreview.set(p.image); this.loading = false; },
-      error: () => this.loading = false
-    });
-  }
-
-  onImageChange(event: Event) {
-    const file = (event.target as HTMLInputElement).files?.[0];
-    if (file) {
-      this.selectedFile = file;
-      const reader = new FileReader();
-      reader.onload = (e) => this.imagePreview.set(e.target?.result as string);
-      reader.readAsDataURL(file);
+    const id = this.route.snapshot.paramMap.get('id');
+    if (id) {
+      this.isEdit = true;
+      this.productId = Number(id);
+      this.api.getProduct(this.productId).subscribe(product => this.fill(product));
+    } else {
+      this.addVariant();
     }
   }
 
-  save() {
-    if (this.form.invalid) return;
-    this.saving = true;
-    const fd = new FormData();
-    Object.entries(this.form.value).forEach(([k, v]) => {
-      if (v !== null && v !== undefined) fd.append(k, String(v));
-    });
-    if (this.selectedFile) fd.append('image', this.selectedFile);
+  loadColors() {
+    this.api.getColors({ page_size: 200 }).subscribe(r => this.colors.set(r.results));
+  }
 
-    const req = this.isEdit && this.product()
-      ? this.api.updateProduct(this.product()!.id, fd)
-      : this.api.createProduct(fd);
+  loadSizes() {
+    this.api.getSizes({ page_size: 200 }).subscribe(r => this.sizes.set(r.results));
+  }
 
-    req.subscribe({
-      next: () => { this.saving = false; this.snackBar.open('Product saved!', '', { duration: 2000 }); this.router.navigate(['/products']); },
-      error: (err) => { this.saving = false; this.snackBar.open(err.error?.detail || 'Save failed', 'Close', { duration: 3000 }); }
-    });
+  fill(product: Product) {
+    this.model = {
+      name: product.name,
+      category: product.category,
+      barcode: product.barcode,
+      base_selling_price: Number(product.base_selling_price),
+      base_cost_price: Number(product.base_cost_price ?? 0),
+      low_stock_threshold: product.low_stock_threshold,
+      is_active: product.is_active,
+      description: product.description,
+    };
+    this.variants = (product.variants ?? []).map(v => ({
+      id: v.id,
+      color: v.color,
+      size: v.size,
+      barcode: v.barcode,
+      selling_price: v.selling_price !== null ? Number(v.selling_price) : null,
+      cost_price: v.cost_price != null ? Number(v.cost_price) : null,
+      stock_quantity: v.stock_quantity,
+      low_stock_threshold: v.low_stock_threshold,
+      is_active: v.is_active,
+    }));
   }
 
   addVariant() {
-    if (!this.newVariantBarcode) { this.snackBar.open('Barcode is required', 'Close', { duration: 2000 }); return; }
-    const data = {
-      product: this.product()?.id,
-      color: this.newVariantColor,
-      size: this.newVariantSize,
-      sku: this.newVariantSku,
-      barcode: this.newVariantBarcode,
+    this.variants = [...this.variants, {
+      color: null, size: null, barcode: '',
+      selling_price: null, cost_price: null, stock_quantity: 0,
+      low_stock_threshold: this.model.low_stock_threshold ?? 5, is_active: true,
+    }];
+  }
+
+  removeVariant(index: number) {
+    this.variants = this.variants.filter((_, i) => i !== index);
+  }
+
+  createColor() {
+    const name = this.newColor.trim();
+    if (!name) return;
+    this.api.createColor({ name }).subscribe({
+      next: color => {
+        this.loadColors();
+        this.newColor = '';
+      },
+      error: () => this.toast.error(this.i18n.t('common.error')),
+    });
+  }
+
+  createSize() {
+    const name = this.newSize.trim();
+    if (!name) return;
+    this.api.createSize({ name, size_type: this.newSizeType }).subscribe({
+      next: () => { this.loadSizes(); this.newSize = ''; },
+      error: () => this.toast.error(this.i18n.t('common.error')),
+    });
+  }
+
+  save() {
+    if (!this.model.name || !this.model.base_selling_price) return;
+    this.saving = true;
+
+    const payload: any = {
+      name: this.model.name,
+      category: this.model.category,
+      barcode: this.model.barcode || '',
+      base_selling_price: Number(this.model.base_selling_price),
+      low_stock_threshold: Number(this.model.low_stock_threshold || 5),
+      is_active: this.model.is_active,
+      description: this.model.description,
+      variants: this.variants.map(v => ({
+        ...(v.id ? { id: v.id } : {}),
+        color: v.color,
+        size: v.size,
+        barcode: v.barcode || '',
+        selling_price: v.selling_price === null || v.selling_price === undefined
+          ? null : Number(v.selling_price),
+        stock_quantity: Number(v.stock_quantity || 0),
+        low_stock_threshold: Number(v.low_stock_threshold || 5),
+        is_active: true,
+      })),
     };
-    this.api.createVariant(data).subscribe({
-      next: () => { this.snackBar.open('Variant added!', '', { duration: 2000 }); this.loadProduct(this.product()!.id); },
-      error: (err) => this.snackBar.open(err.error?.barcode?.[0] || 'Failed', 'Close', { duration: 3000 })
+
+    if (this.auth.canViewFinancials()) {
+      payload.base_cost_price = Number(this.model.base_cost_price || 0);
+      payload.variants = payload.variants.map((v: any, i: number) => ({
+        ...v,
+        cost_price: this.variants[i]?.cost_price ?? null,
+      }));
+    }
+
+    const request = this.isEdit && this.productId
+      ? this.api.updateProduct(this.productId, payload)
+      : this.api.createProduct(payload);
+
+    request.subscribe({
+      next: () => {
+        this.saving = false;
+        this.toast.success(this.i18n.t('common.saved'));
+        this.router.navigate(['/products']);
+      },
+      error: err => {
+        this.saving = false;
+        const body = err.error ?? {};
+        const message = typeof body === 'string' ? body : JSON.stringify(body);
+        this.toast.error((message || this.i18n.t('common.error')).slice(0, 200));
+      },
     });
   }
 }

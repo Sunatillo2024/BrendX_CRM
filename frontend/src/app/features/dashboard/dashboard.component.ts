@@ -1,271 +1,487 @@
-﻿import { Component, OnInit, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RouterLink } from '@angular/router';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { RouterLink } from '@angular/router';
+import { MoneyPipe, TranslatePipe } from '../../core/i18n/translate.pipe';
+import {
+  DashboardPayload, FinanceEntry, OperationalStats, SaleListItem,
+} from '../../core/models/models';
 import { ApiService } from '../../core/services/api.service';
-import { DashboardStats } from '../../core/models/models';
 import { AuthService } from '../../core/services/auth.service';
+
+type PeriodKey = 'today' | 'yesterday' | 'week' | 'month' | 'custom';
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, RouterLink, MatIconModule, MatButtonModule, MatProgressBarModule],
+  imports: [CommonModule, FormsModule, MatIconModule, RouterLink, TranslatePipe, MoneyPipe],
   template: `
-    <div class="page-container">
-      <!-- Header -->
-      <div class="page-header">
-        <div>
-          <h1>Dashboard</h1>
-          <div style="font-size:13px;color:var(--text-muted);margin-top:2px">
-            Welcome back, <strong>{{ auth.currentUser()?.username }}</strong>
-          </div>
-        </div>
-        <button mat-raised-button color="primary" routerLink="/pos">
-          <mat-icon>point_of_sale</mat-icon> New Sale
-        </button>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">{{ 'dashboard.title' | t }}</h1>
+        <div class="page-sub">{{ auth.displayName() }} · {{ ('role.' + auth.role()) | t }}</div>
       </div>
+      <div class="period-bar">
+        @for (p of periods; track p) {
+          <button class="period-btn" [class.active]="period === p" (click)="setPeriod(p)">
+            {{ ('common.' + p) | t }}
+          </button>
+        }
+        @if (period === 'custom') {
+          <input class="input" style="width:150px" type="date" [(ngModel)]="dateFrom"
+                 (change)="load()">
+          <input class="input" style="width:150px" type="date" [(ngModel)]="dateTo"
+                 (change)="load()">
+        }
+      </div>
+    </div>
 
-      @if (loading) { <mat-progress-bar mode="indeterminate" style="border-radius:4px;margin-bottom:16px" /> }
+    <div class="page-body">
+      @if (loading() && !data()) {
+        <div class="grid grid-4">
+          @for (i of [1,2,3,4]; track i) { <div class="skeleton skeleton-card"></div> }
+        </div>
+      }
 
-      @if (stats) {
-        <!-- KPI Cards -->
-        <div class="kpi-grid">
-          <div class="kpi-card kpi-blue">
-            <div class="kpi-icon-wrap" style="background:rgba(99,102,241,0.12)">
-              <mat-icon style="color:#6366f1">receipt_long</mat-icon>
+      @if (data(); as d) {
+        <!-- Cashier: personal shift -->
+        @if (d.my_sales) {
+          <div class="grid grid-2">
+            <div class="stat">
+              <div class="stat-row">
+                <div class="stat-icon"><mat-icon>point_of_sale</mat-icon></div>
+              </div>
+              <div class="stat-label mt-12">{{ 'dashboard.mySales' | t }}</div>
+              <div class="stat-value">{{ d.my_sales.sales_count }}</div>
             </div>
-            <div class="kpi-body">
-              <div class="kpi-value">{{ stats.today.count || 0 }}</div>
-              <div class="kpi-label">Sales Today</div>
+            <div class="stat">
+              <div class="stat-row">
+                <div class="stat-icon success"><mat-icon>payments</mat-icon></div>
+              </div>
+              <div class="stat-label mt-12">{{ 'dashboard.myRevenue' | t }}</div>
+              <div class="stat-value positive">{{ d.my_sales.revenue | money }}</div>
             </div>
-            <div class="kpi-trend">
-              <mat-icon style="color:#10b981;font-size:16px">trending_up</mat-icon>
+          </div>
+        }
+
+        @if (d.operational; as ops) {
+          <div class="grid grid-4">
+            <div class="stat">
+              <div class="stat-row">
+                <div class="stat-icon"><mat-icon>trending_up</mat-icon></div>
+                @if (trendRevenue(); as tr) {
+                  <span class="trend" [class.up]="tr >= 0" [class.down]="tr < 0">
+                    <mat-icon style="font-size:15px">{{ tr >= 0 ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+                    {{ tr | number: '1.0-1' }}%
+                  </span>
+                }
+              </div>
+              <div class="stat-label mt-12">{{ 'dashboard.revenue' | t }}</div>
+              <div class="stat-value accent">{{ ops.revenue | money }}</div>
+              @if (ops.returns_total > 0) {
+                <div class="stat-sub">{{ 'dashboard.returns' | t }}: -{{ ops.returns_total | money }}</div>
+              }
+            </div>
+
+            <div class="stat">
+              <div class="stat-row">
+                <div class="stat-icon info"><mat-icon>receipt_long</mat-icon></div>
+                @if (trendSales(); as ts) {
+                  <span class="trend" [class.up]="ts >= 0" [class.down]="ts < 0">
+                    <mat-icon style="font-size:15px">{{ ts >= 0 ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+                    {{ ts | number: '1.0-1' }}%
+                  </span>
+                }
+              </div>
+              <div class="stat-label mt-12">{{ 'dashboard.salesCount' | t }}</div>
+              <div class="stat-value">{{ ops.sales_count }}</div>
+            </div>
+
+            <div class="stat">
+              <div class="stat-row">
+                <div class="stat-icon warn"><mat-icon>shopping_bag</mat-icon></div>
+              </div>
+              <div class="stat-label mt-12">{{ 'dashboard.averageCheck' | t }}</div>
+              <div class="stat-value">{{ ops.average_check | money }}</div>
+            </div>
+
+            <div class="stat">
+              <div class="stat-row">
+                <div class="stat-icon success"><mat-icon>inventory_2</mat-icon></div>
+              </div>
+              <div class="stat-label mt-12">{{ 'dashboard.unitsSold' | t }}</div>
+              <div class="stat-value">{{ ops.units_sold }}</div>
             </div>
           </div>
 
-          <div class="kpi-card kpi-green">
-            <div class="kpi-icon-wrap" style="background:rgba(16,185,129,0.12)">
-              <mat-icon style="color:#10b981">attach_money</mat-icon>
+          <!-- Owner-only financial KPIs -->
+          @if (d.financial; as fin) {
+            <div class="grid grid-3 mt-16">
+              <div class="stat">
+                <div class="stat-row">
+                  <div class="stat-icon success"><mat-icon>savings</mat-icon></div>
+                </div>
+                <div class="stat-label mt-12">{{ 'profit.grossProfit' | t }}</div>
+                <div class="stat-value positive">{{ fin.gross_profit | money }}</div>
+                <div class="stat-sub">{{ 'profit.cost' | t }}: {{ fin.cost_of_goods | money }}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-row">
+                  <div class="stat-icon danger"><mat-icon>receipt</mat-icon></div>
+                </div>
+                <div class="stat-label mt-12">{{ 'profit.expenses' | t }}</div>
+                <div class="stat-value negative">{{ fin.expenses | money }}</div>
+                @if (fin.other_income > 0) {
+                  <div class="stat-sub">{{ 'profit.otherIncome' | t }}: +{{ fin.other_income | money }}</div>
+                }
+              </div>
+              <div class="stat">
+                <div class="stat-row">
+                  <div class="stat-icon" [class.success]="fin.net_profit >= 0"
+                       [class.danger]="fin.net_profit < 0">
+                    <mat-icon>account_balance</mat-icon>
+                  </div>
+                </div>
+                <div class="stat-label mt-12">{{ 'profit.netProfit' | t }}</div>
+                <div class="stat-value" [class.positive]="fin.net_profit >= 0"
+                     [class.negative]="fin.net_profit < 0">{{ fin.net_profit | money }}</div>
+              </div>
             </div>
-            <div class="kpi-body">
-              <div class="kpi-value">{{ (stats.today.total || 0) | currency:'USD':'symbol':'1.0-0' }}</div>
-              <div class="kpi-label">Revenue Today</div>
+          }
+        }
+
+        <div class="grid dash-two mt-16">
+          <!-- Sales chart -->
+          <div class="card">
+            <div class="section-head">
+              <div class="section-title"><mat-icon>show_chart</mat-icon> {{ 'dashboard.chart' | t }}</div>
             </div>
+            @if (d.chart?.length) {
+              <div class="bars">
+                @for (point of d.chart; track point.date) {
+                  <div class="bar-col" [title]="point.date + ': ' + (point.revenue | money)">
+                    <div class="bar-track">
+                      <div class="bar" [style.height.%]="barHeight(point.revenue)"></div>
+                    </div>
+                    <span class="bar-label">{{ point.date.slice(5) }}</span>
+                  </div>
+                }
+              </div>
+            } @else {
+              <div class="empty-state"><mat-icon>bar_chart</mat-icon>
+                <p>{{ 'dashboard.noSales' | t }}</p></div>
+            }
           </div>
 
-          <div class="kpi-card kpi-purple">
-            <div class="kpi-icon-wrap" style="background:rgba(139,92,246,0.12)">
-              <mat-icon style="color:#8b5cf6">calendar_month</mat-icon>
+          <!-- Payment split -->
+          <div class="card">
+            <div class="section-head">
+              <div class="section-title"><mat-icon>donut_small</mat-icon> {{ 'dashboard.payments' | t }}</div>
             </div>
-            <div class="kpi-body">
-              <div class="kpi-value">{{ (stats.this_month.total || 0) | currency:'USD':'symbol':'1.0-0' }}</div>
-              <div class="kpi-label">Month Revenue</div>
-            </div>
-          </div>
-
-          <div class="kpi-card kpi-red">
-            <div class="kpi-icon-wrap" style="background:rgba(239,68,68,0.12)">
-              <mat-icon style="color:#ef4444">account_balance_wallet</mat-icon>
-            </div>
-            <div class="kpi-body">
-              <div class="kpi-value">{{ ((stats.outstanding_credit || 0) + (stats.outstanding_installment || 0)) | currency:'USD':'symbol':'1.0-0' }}</div>
-              <div class="kpi-label">Outstanding Debt</div>
-            </div>
+            @if (d.operational; as ops) {
+              <div class="split">
+                <div class="split-bar">
+                  <div class="split-cash" [style.width.%]="cashShare()"></div>
+                  <div class="split-card" [style.width.%]="100 - cashShare()"></div>
+                </div>
+                <div class="split-legend">
+                  <div class="legend-item">
+                    <span class="dot" style="background:var(--primary)"></span>
+                    <div>
+                      <div class="small muted">{{ 'dashboard.cash' | t }}</div>
+                      <div class="strong">{{ ops.cash_total | money }}</div>
+                    </div>
+                  </div>
+                  <div class="legend-item">
+                    <span class="dot" style="background:var(--success)"></span>
+                    <div>
+                      <div class="small muted">{{ 'dashboard.card' | t }}</div>
+                      <div class="strong">{{ ops.card_total | money }}</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="divider"></div>
+                <div class="between">
+                  <span class="muted small">{{ 'dashboard.discountTotal' | t }}</span>
+                  <span class="strong small">{{ ops.discount_total | money }}</span>
+                </div>
+              </div>
+            }
           </div>
         </div>
 
-        <!-- Sale Type Cards -->
-        <div class="section-title">This Month by Payment Type</div>
-        <div class="type-grid">
-          <div class="type-card">
-            <div class="type-icon" style="background:#d1fae5;color:#059669">
-              <mat-icon>payments</mat-icon>
+        <div class="grid dash-two mt-16">
+          <!-- Top products -->
+          <div class="card">
+            <div class="section-head">
+              <div class="section-title"><mat-icon>local_fire_department</mat-icon>
+                {{ 'dashboard.topProducts' | t }}</div>
             </div>
-            <div class="type-count" style="color:#059669">{{ stats.by_type.cash?.count || 0 }}</div>
-            <div class="type-label">Cash Sales</div>
-            <div class="type-amount">{{ (stats.by_type.cash?.total || 0) | currency:'USD':'symbol':'1.0-0' }}</div>
+            @if (d.top_products?.length) {
+              <div class="top-list">
+                @for (p of d.top_products; track p.product_name; let i = $index) {
+                  <div class="top-row">
+                    <span class="rank">{{ i + 1 }}</span>
+                    <span class="truncate strong" style="flex:1">{{ p.product_name }}</span>
+                    <span class="badge">{{ p.units }} {{ 'pos.pcs' | t }}</span>
+                    <span class="strong small" style="min-width:90px;text-align:right">
+                      {{ p.revenue | money }}
+                    </span>
+                  </div>
+                }
+              </div>
+            } @else {
+              <div class="empty-state"><mat-icon>inventory_2</mat-icon>
+                <p>{{ 'dashboard.noSales' | t }}</p></div>
+            }
           </div>
-          <div class="type-card">
-            <div class="type-icon" style="background:#dbeafe;color:#2563eb">
-              <mat-icon>credit_card</mat-icon>
+
+          <!-- Recent sales -->
+          <div class="card">
+            <div class="section-head">
+              <div class="section-title"><mat-icon>history</mat-icon> {{ 'dashboard.recentSales' | t }}</div>
+              <a class="btn sm ghost" routerLink="/sales">{{ 'common.all' | t }}</a>
             </div>
-            <div class="type-count" style="color:#2563eb">{{ stats.by_type.credit?.count || 0 }}</div>
-            <div class="type-label">Credit Sales</div>
-            <div class="type-amount">{{ (stats.by_type.credit?.total || 0) | currency:'USD':'symbol':'1.0-0' }}</div>
-          </div>
-          <div class="type-card">
-            <div class="type-icon" style="background:#fef3c7;color:#d97706">
-              <mat-icon>schedule</mat-icon>
-            </div>
-            <div class="type-count" style="color:#d97706">{{ stats.by_type.installment?.count || 0 }}</div>
-            <div class="type-label">Installment</div>
-            <div class="type-amount">{{ (stats.by_type.installment?.total || 0) | currency:'USD':'symbol':'1.0-0' }}</div>
+            @if (recentSales().length) {
+              <div class="recent-list">
+                @for (s of recentSales(); track s.id) {
+                  <a class="recent-row" [routerLink]="['/sales', s.id]">
+                    <div class="recent-main">
+                      <span class="strong">№{{ s.sale_number }}</span>
+                      <span class="small muted">{{ s.created_at | date: 'dd.MM HH:mm' }}
+                        · {{ s.cashier_name }}</span>
+                    </div>
+                    <span class="badge info">{{ ('payment.' + s.payment_method) | t }}</span>
+                    <span class="strong small">{{ s.total_amount | money }}</span>
+                  </a>
+                }
+              </div>
+            } @else {
+              <div class="empty-state"><mat-icon>receipt_long</mat-icon>
+                <p>{{ 'dashboard.noSales' | t }}</p></div>
+            }
           </div>
         </div>
 
-        <!-- Outstanding Balances -->
-        <div class="section-title">Outstanding Balances</div>
-        <div class="balance-grid">
-          <div class="balance-card">
-            <div class="balance-header">
-              <div class="balance-icon" style="background:#fee2e2;color:#dc2626">
-                <mat-icon>credit_score</mat-icon>
-              </div>
-              <div>
-                <div class="balance-title">Credit Customers</div>
-                <div class="balance-sub">Unpaid credit balance</div>
-              </div>
+        <div class="grid dash-two mt-16">
+          <!-- Low stock -->
+          <div class="card">
+            <div class="section-head">
+              <div class="section-title"><mat-icon>warning_amber</mat-icon> {{ 'dashboard.lowStock' | t }}</div>
+              <a class="btn sm ghost" routerLink="/stock">{{ 'common.all' | t }}</a>
             </div>
-            <div class="balance-amount">{{ (stats.outstanding_credit || 0) | currency }}</div>
-            <a class="balance-link" routerLink="/customers" [queryParams]="{type:'credit'}">
-              View credit customers <mat-icon style="font-size:14px">arrow_forward</mat-icon>
-            </a>
+            @if (d.low_stock?.length) {
+              <table class="data">
+                <tbody>
+                  @for (v of d.low_stock; track v.id) {
+                    <tr>
+                      <td class="strong">{{ v.product_name }}</td>
+                      <td class="muted small">{{ v.color_name || '—' }} / {{ v.size_name || '—' }}</td>
+                      <td class="num">
+                        <span class="badge" [class.danger]="v.stock_quantity <= 0"
+                              [class.warn]="v.stock_quantity > 0">
+                          {{ v.stock_quantity }} {{ 'pos.pcs' | t }}
+                        </span>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            } @else {
+              <div class="empty-state"><mat-icon>check_circle</mat-icon>
+                <p>{{ 'dashboard.noLowStock' | t }}</p></div>
+            }
           </div>
 
-          <div class="balance-card">
-            <div class="balance-header">
-              <div class="balance-icon" style="background:#fef3c7;color:#d97706">
-                <mat-icon>event_repeat</mat-icon>
+          <!-- Recent expenses (owner) -->
+          @if (auth.isOwner()) {
+            <div class="card">
+              <div class="section-head">
+                <div class="section-title"><mat-icon>receipt</mat-icon> {{ 'dashboard.recentExpenses' | t }}</div>
+                <a class="btn sm ghost" routerLink="/finance">{{ 'common.all' | t }}</a>
               </div>
-              <div>
-                <div class="balance-title">Installment Plans</div>
-                <div class="balance-sub">Remaining installments</div>
-              </div>
+              @if (recentExpenses().length) {
+                <div class="recent-list">
+                  @for (e of recentExpenses(); track e.id) {
+                    <div class="recent-row">
+                      <div class="recent-main">
+                        <span class="strong">{{ e.category || ('finance.expense' | t) }}</span>
+                        <span class="small muted">{{ e.entry_date }}</span>
+                      </div>
+                      <span class="strong small negative">-{{ e.amount | money }}</span>
+                    </div>
+                  }
+                </div>
+              } @else {
+                <div class="empty-state"><mat-icon>receipt</mat-icon>
+                  <p>{{ 'dashboard.noExpenses' | t }}</p></div>
+              }
             </div>
-            <div class="balance-amount">{{ (stats.outstanding_installment || 0) | currency }}</div>
-            <a class="balance-link" routerLink="/customers" [queryParams]="{type:'installment'}">
-              View installment plans <mat-icon style="font-size:14px">arrow_forward</mat-icon>
-            </a>
-          </div>
+          }
         </div>
       }
     </div>
   `,
   styles: [`
-    /* KPI grid */
-    .kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-bottom: 32px;
+    .dash-two { grid-template-columns: 1.5fr 1fr; }
+    .mt-16 { margin-top: 16px; }
+    .split { display: flex; flex-direction: column; gap: 16px; }
+    .split-bar {
+      display: flex; height: 12px; border-radius: 8px; overflow: hidden;
+      background: var(--surface-3);
     }
-    .kpi-card {
-      background: white;
-      border-radius: 14px;
-      padding: 20px 22px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-      border: 1px solid #e8edf4;
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      position: relative;
-      overflow: hidden;
-      transition: box-shadow 0.2s, transform 0.2s;
-      &::after {
-        content: '';
-        position: absolute;
-        top: 0; left: 0; right: 0;
-        height: 3px;
-        border-radius: 14px 14px 0 0;
-      }
-      &:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.09); transform: translateY(-2px); }
-    }
-    .kpi-blue::after  { background: linear-gradient(90deg, #6366f1, #8b5cf6); }
-    .kpi-green::after { background: linear-gradient(90deg, #10b981, #06b6d4); }
-    .kpi-purple::after{ background: linear-gradient(90deg, #8b5cf6, #ec4899); }
-    .kpi-red::after   { background: linear-gradient(90deg, #ef4444, #f97316); }
-    .kpi-icon-wrap {
-      width: 48px; height: 48px; flex-shrink: 0;
-      border-radius: 12px;
-      display: flex; align-items: center; justify-content: center;
-      mat-icon { font-size: 24px; width: 24px; height: 24px; }
-    }
-    .kpi-body { flex: 1; }
-    .kpi-value { font-size: 24px; font-weight: 700; color: #0f172a; line-height: 1; margin-bottom: 5px; letter-spacing: -0.5px; }
-    .kpi-label { font-size: 12px; color: #64748b; font-weight: 500; letter-spacing: 0.2px; }
-    .kpi-trend { margin-left: auto; }
+    .split-cash { background: var(--primary); transition: width 400ms var(--ease); }
+    .split-card { background: var(--success); transition: width 400ms var(--ease); }
+    .split-legend { display: flex; gap: 24px; }
+    .legend-item { display: flex; align-items: flex-start; gap: 9px; }
+    .legend-item .dot { margin-top: 5px; }
 
-    /* Section title */
-    .section-title {
-      font-size: 11px; font-weight: 700; letter-spacing: 0.8px;
-      text-transform: uppercase; color: #94a3b8;
-      margin: 4px 0 12px;
+    .top-list { display: flex; flex-direction: column; }
+    .top-row {
+      display: flex; align-items: center; gap: 12px; padding: 11px 0;
+      border-bottom: 1px solid var(--border);
+      &:last-child { border-bottom: none; }
+    }
+    .rank {
+      width: 24px; height: 24px; border-radius: 7px; flex-shrink: 0;
+      background: var(--surface-3); color: var(--text-2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11.5px; font-weight: 700;
     }
 
-    /* Type cards */
-    .type-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
-      margin-bottom: 32px;
+    .recent-list { display: flex; flex-direction: column; }
+    .recent-row {
+      display: flex; align-items: center; gap: 12px; padding: 11px 2px;
+      border-bottom: 1px solid var(--border); text-decoration: none; color: inherit;
+      transition: background 140ms; border-radius: 6px;
+      &:last-child { border-bottom: none; }
+      &:hover { background: var(--surface-2); }
     }
-    .type-card {
-      background: white;
-      border-radius: 14px;
-      padding: 24px 20px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-      border: 1px solid #e8edf4;
-      text-align: center;
-      transition: box-shadow 0.2s, transform 0.2s;
-      &:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.09); transform: translateY(-2px); }
-    }
-    .type-icon {
-      width: 54px; height: 54px; border-radius: 14px;
-      display: flex; align-items: center; justify-content: center;
-      margin: 0 auto 14px;
-      mat-icon { font-size: 26px; }
-    }
-    .type-count { font-size: 32px; font-weight: 700; margin-bottom: 3px; letter-spacing: -0.5px; }
-    .type-label { font-size: 12px; color: #64748b; font-weight: 500; margin-bottom: 10px; }
-    .type-amount { font-size: 15px; font-weight: 700; color: #0f172a; }
+    .recent-main { flex: 1; display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 
-    /* Balance cards */
-    .balance-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 16px;
+    @media (max-width: 1050px) {
+      .dash-two { grid-template-columns: 1fr; }
     }
-    .balance-card {
-      background: white;
-      border-radius: 14px;
-      padding: 22px 24px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-      border: 1px solid #e8edf4;
-      transition: box-shadow 0.2s, transform 0.2s;
-      &:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.09); transform: translateY(-2px); }
-    }
-    .balance-header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
-    .balance-icon {
-      width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center;
-      mat-icon { font-size: 22px; }
-    }
-    .balance-title { font-size: 14px; font-weight: 600; color: #0f172a; }
-    .balance-sub { font-size: 12px; color: #94a3b8; margin-top: 3px; }
-    .balance-amount { font-size: 30px; font-weight: 700; color: #ef4444; margin-bottom: 14px; letter-spacing: -0.5px; }
-    .balance-link {
-      display: inline-flex; align-items: center; gap: 4px;
-      font-size: 13px; color: #6366f1; font-weight: 600;
-      text-decoration: none;
-      padding: 4px 0;
-      border-bottom: 1px solid transparent;
-      transition: border-color 0.15s;
-      &:hover { border-bottom-color: #6366f1; }
-    }
-  `]
+  `],
 })
 export class DashboardComponent implements OnInit {
   private api = inject(ApiService);
   auth = inject(AuthService);
-  stats: DashboardStats | null = null;
-  loading = true;
+
+  readonly periods: PeriodKey[] = ['today', 'yesterday', 'week', 'month', 'custom'];
+  period: PeriodKey = 'today';
+  dateFrom = '';
+  dateTo = '';
+
+  data = signal<DashboardPayload | null>(null);
+  loading = signal(true);
+  private previous = signal<OperationalStats | null>(null);
+  recentSales = signal<SaleListItem[]>([]);
+  recentExpenses = signal<FinanceEntry[]>([]);
+
+  readonly trendRevenue = computed(() => this.trend(o => o.revenue));
+  readonly trendSales = computed(() => this.trend(o => o.sales_count));
+
+  cashShare = computed(() => {
+    const ops = this.data()?.operational;
+    if (!ops) return 50;
+    const total = Number(ops.cash_total) + Number(ops.card_total);
+    return total > 0 ? (Number(ops.cash_total) / total) * 100 : 50;
+  });
 
   ngOnInit() {
-    this.api.getDashboardStats().subscribe({
-      next: (data) => { this.stats = data; this.loading = false; },
-      error: () => { this.loading = false; }
+    const today = new Date().toISOString().slice(0, 10);
+    this.dateFrom = today;
+    this.dateTo = today;
+    this.load();
+  }
+
+  setPeriod(period: PeriodKey) {
+    this.period = period;
+    this.load();
+  }
+
+  load() {
+    this.loading.set(true);
+    const params: Record<string, string> = { period: this.period };
+    if (this.period === 'custom') {
+      params['date_from'] = this.dateFrom;
+      params['date_to'] = this.dateTo;
+    }
+
+    this.api.getDashboard(params).subscribe(res => {
+      this.data.set(res);
+      this.loading.set(false);
     });
+
+    // Previous-period comparison (only when it can be computed honestly).
+    const prev = this.previousParams();
+    this.previous.set(null);
+    if (prev) {
+      this.api.getDashboard(prev).subscribe(res => this.previous.set(res.operational ?? null));
+    }
+
+    // Supporting panels.
+    if (!this.auth.isCashier()) {
+      this.api.getSales({ page_size: 5, ordering: '-created_at' })
+        .subscribe(r => this.recentSales.set(r.results));
+      if (this.auth.isOwner()) {
+        this.api.getFinanceEntries({ page_size: 5, entry_type: 'expense', ordering: '-entry_date' })
+          .subscribe(r => this.recentExpenses.set(r.results));
+      }
+    }
+  }
+
+  barHeight(value: number): number {
+    const points = this.data()?.chart ?? [];
+    const max = Math.max(...points.map(p => Number(p.revenue)), 1);
+    return Math.max(4, (Number(value) / max) * 100);
+  }
+
+  /** Returns a percentage change vs the previous period, or null when unreliable. */
+  private trend(pick: (o: OperationalStats) => number): number | null {
+    const prev = this.previous();
+    const cur = this.data()?.operational;
+    if (!prev || !cur) return null;
+    const before = Number(pick(prev));
+    const now = Number(pick(cur));
+    if (!before) return null;
+    return ((now - before) / before) * 100;
+  }
+
+  private previousParams(): Record<string, string> | null {
+    const shift = (days: number, from: string) => {
+      const d = new Date(from + 'T00:00:00');
+      d.setDate(d.getDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+    if (this.period === 'today') return { period: 'yesterday' };
+    if (this.period === 'yesterday') {
+      const day = shift(-1, new Date().toISOString().slice(0, 10));
+      return { period: 'custom', date_from: day, date_to: day };
+    }
+    if (this.period === 'week') {
+      const end = shift(-1, this.dateRangeStart());
+      const start = shift(-7, end);
+      return { period: 'custom', date_from: start, date_to: end };
+    }
+    if (this.period === 'month') {
+      const d = new Date();
+      const firstOfPrev = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+      const lastOfPrev = new Date(d.getFullYear(), d.getMonth(), 0);
+      return {
+        period: 'custom',
+        date_from: firstOfPrev.toISOString().slice(0, 10),
+        date_to: lastOfPrev.toISOString().slice(0, 10),
+      };
+    }
+    return null;
+  }
+
+  private dateRangeStart(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return d.toISOString().slice(0, 10);
   }
 }

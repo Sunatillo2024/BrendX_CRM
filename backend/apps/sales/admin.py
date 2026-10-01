@@ -1,31 +1,44 @@
 from django.contrib import admin
-from .models import Sale, SaleItem, Receipt
+
+from .models import Receipt, Sale, SaleItem, SaleReturn, SaleReturnItem
 
 
 class SaleItemInline(admin.TabularInline):
     model = SaleItem
     extra = 0
-    fields = ['product_variant', 'quantity', 'unit_price', 'discount_percent', 'discount_amount', 'total_price']
-    readonly_fields = ['discount_amount', 'total_price']
+    readonly_fields = ['product_name', 'color_name', 'size_name', 'discount_amount', 'total_price']
+    fields = ['product_variant', 'product_name', 'color_name', 'size_name', 'quantity',
+              'unit_price', 'unit_cost', 'discount_percent', 'discount_amount', 'total_price']
 
 
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
-    list_display = ['sale_number', 'customer', 'cashier', 'sale_type', 'total_amount', 'paid_amount', 'remaining_amount', 'status', 'created_at']
-    list_filter = ['sale_type', 'status', 'created_at']
-    search_fields = ['sale_number', 'customer__name', 'cashier__username']
-    readonly_fields = ['sale_number', 'created_at', 'updated_at']
+    list_display = ['sale_number', 'created_at', 'cashier', 'customer', 'payment_method',
+                    'total_amount', 'cash_amount', 'card_amount', 'change_amount', 'status']
+    list_filter = ['payment_method', 'status', 'created_at', 'cashier']
+    search_fields = ['number', 'customer__name', 'notes']
+    readonly_fields = ['number', 'created_at', 'updated_at']
     inlines = [SaleItemInline]
 
+    @admin.display(description='№')
+    def sale_number(self, obj):
+        return obj.sale_number
 
-@admin.register(SaleItem)
-class SaleItemAdmin(admin.ModelAdmin):
-    list_display = ['sale', 'product_variant', 'quantity', 'unit_price', 'discount_amount', 'total_price']
-    search_fields = ['sale__sale_number', 'product_variant__product__name']
+
+class SaleReturnItemInline(admin.TabularInline):
+    model = SaleReturnItem
+    extra = 0
+
+
+@admin.register(SaleReturn)
+class SaleReturnAdmin(admin.ModelAdmin):
+    list_display = ['id', 'sale', 'reason', 'total_amount', 'created_by', 'created_at']
+    list_filter = ['reason', 'created_at']
+    search_fields = ['sale__number', 'notes']
+    inlines = [SaleReturnItemInline]
 
 
 @admin.register(Receipt)
 class ReceiptAdmin(admin.ModelAdmin):
-    list_display = ['receipt_number', 'sale', 'printed_count', 'generated_at']
-    search_fields = ['receipt_number', 'sale__sale_number']
-    readonly_fields = ['receipt_number', 'generated_at']
+    list_display = ['receipt_number', 'sale', 'generated_at', 'printed_count']
+    search_fields = ['receipt_number', 'sale__number']

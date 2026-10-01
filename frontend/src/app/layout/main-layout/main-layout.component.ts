@@ -1,392 +1,410 @@
-﻿import { Component, inject, signal, HostListener } from '@angular/core';
-import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
 import { CommonModule } from '@angular/common';
-import { MatIconModule } from '@angular/material/icon';
+import { Component, HostListener, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { filter } from 'rxjs/operators';
+import { TranslatePipe } from '../../core/i18n/translate.pipe';
+import { LANGUAGES, Lang } from '../../core/i18n/translations';
+import { TranslationService } from '../../core/i18n/translation.service';
 import { AuthService } from '../../core/services/auth.service';
+import { ThemeMode, ThemeService } from '../../core/ui/theme.service';
 
-interface NavItem  { label: string; icon: string; route: string; roles?: string[]; }
-interface NavGroup { group: string; items: NavItem[]; }
+interface NavItem { key: string; icon: string; route: string; roles?: string[]; }
+interface NavGroup { key: string; items: NavItem[]; }
+
+const MANAGER = ['owner', 'manager'];
+
+/** First path segment → i18n key for the header title. */
+const TITLE_KEYS: Record<string, string> = {
+  dashboard: 'menu.dashboard',
+  pos: 'menu.pos',
+  products: 'menu.products',
+  categories: 'menu.categories',
+  stock: 'menu.stock',
+  receipts: 'menu.receipts',
+  sales: 'menu.sales',
+  finance: 'menu.finance',
+  reports: 'menu.reports',
+  employees: 'menu.employees',
+  settings: 'menu.settings',
+};
 
 @Component({
   selector: 'app-main-layout',
   standalone: true,
   imports: [
-    CommonModule, RouterOutlet, RouterLink, RouterLinkActive,
-    MatIconModule, MatButtonModule, MatTooltipModule,
+    CommonModule, FormsModule, RouterOutlet, RouterLink, RouterLinkActive,
+    MatIconModule, MatButtonModule, MatTooltipModule, TranslatePipe,
   ],
   template: `
-    <div class="app-shell" [class.sidebar-collapsed]="sidebarCollapsed()">
-
-      <!-- ── Sidebar ── -->
-      <aside class="sidebar" [class.mobile-open]="mobileSidebarOpen()">
-
-        <!-- Brand -->
+    <div class="app-shell" [class.collapsed]="collapsed()">
+      <aside class="sidebar" [class.mobile-open]="mobileOpen()">
         <div class="brand">
-          <div class="brand-logo">
-            <mat-icon>checkroom</mat-icon>
-          </div>
-          @if (!sidebarCollapsed()) {
+          <div class="brand-logo"><mat-icon>checkroom</mat-icon></div>
+          @if (!collapsed()) {
             <div class="brand-text">
-              <span class="brand-name">BrandX</span>
+              <span class="brand-name">{{ 'app.name' | t }}</span>
               <span class="brand-tag">POS</span>
             </div>
           }
         </div>
 
-        <!-- Nav -->
-        <nav class="nav" aria-label="Main navigation">
-          @for (group of visibleNavGroups(); track group.group) {
-            @if (!sidebarCollapsed()) {
-              <div class="nav-group-label">{{ group.group }}</div>
-            }
+        <nav class="nav">
+          @for (group of visibleGroups(); track group.key) {
+            @if (!collapsed()) { <div class="group-label">{{ group.key | t }}</div> }
             @for (item of group.items; track item.route) {
-              <a class="nav-item"
-                 [routerLink]="item.route"
-                 routerLinkActive="active"
-                 [matTooltip]="sidebarCollapsed() ? item.label : ''"
-                 matTooltipPosition="right">
+              <a class="nav-item" [routerLink]="item.route" routerLinkActive="active"
+                 [matTooltip]="collapsed() ? (item.key | t) : ''" matTooltipPosition="right"
+                 (click)="mobileOpen.set(false)">
                 <mat-icon class="nav-icon">{{ item.icon }}</mat-icon>
-                @if (!sidebarCollapsed()) {
-                  <span class="nav-label">{{ item.label }}</span>
-                }
+                <span class="nav-label">{{ item.key | t }}</span>
               </a>
             }
           }
         </nav>
 
-        <!-- Footer -->
         <div class="sidebar-footer">
-          <div class="user-row">
-            <div class="user-avatar" aria-hidden="true">
-              {{ auth.currentUser()?.username?.[0]?.toUpperCase() }}
-            </div>
-            @if (!sidebarCollapsed()) {
-              <div class="user-meta">
-                <div class="user-name">{{ auth.currentUser()?.username }}</div>
-                <div class="user-role">{{ auth.currentUser()?.role | titlecase }}</div>
-              </div>
-              <button class="logout-btn" (click)="auth.logout()" matTooltip="Log out" aria-label="Log out">
-                <mat-icon>logout</mat-icon>
-              </button>
-            } @else {
-              <button class="logout-btn" (click)="auth.logout()" matTooltip="Log out" matTooltipPosition="right" aria-label="Log out">
-                <mat-icon>logout</mat-icon>
-              </button>
-            }
-          </div>
+          <button class="collapse-btn" (click)="toggle()"
+                  [matTooltip]="collapsed() ? ('menu.expand' | t) : ('menu.collapse' | t)"
+                  matTooltipPosition="right">
+            <mat-icon>{{ collapsed() ? 'chevron_right' : 'chevron_left' }}</mat-icon>
+            <span class="nav-label">{{ 'menu.collapse' | t }}</span>
+          </button>
         </div>
       </aside>
 
-      <!-- Mobile overlay -->
-      @if (mobileSidebarOpen()) {
-        <div class="mobile-overlay" (click)="mobileSidebarOpen.set(false)" aria-hidden="true"></div>
+      @if (mobileOpen()) {
+        <div class="overlay" (click)="mobileOpen.set(false)"></div>
       }
 
-      <!-- ── Main ── -->
-      <div class="main-area">
-
-        <!-- Top bar -->
-        <header class="topbar" role="banner">
-          <button class="topbar-btn" (click)="toggleSidebar()" aria-label="Toggle navigation">
-            <mat-icon>{{ sidebarCollapsed() ? 'menu_open' : 'menu' }}</mat-icon>
+      <div class="main">
+        <header class="topbar">
+          <button class="icon-btn hamburger" (click)="toggle()" aria-label="Menu">
+            <mat-icon>menu</mat-icon>
           </button>
 
+          <div class="page-crumb">
+            <h2>{{ titleKey() | t }}</h2>
+          </div>
+
+          <div class="global-search">
+            <mat-icon>search</mat-icon>
+            <input [(ngModel)]="globalQuery" (keydown.enter)="runGlobalSearch()"
+                   [placeholder]="'common.search' | t"
+                   [attr.aria-label]="'common.search' | t">
+          </div>
+
           <div class="topbar-right">
-            <div class="topbar-user">
-              <div class="topbar-avatar" aria-hidden="true">
-                {{ auth.currentUser()?.username?.[0]?.toUpperCase() }}
-              </div>
-              <div class="topbar-info">
-                <span class="topbar-name">{{ auth.currentUser()?.username }}</span>
-                <span class="topbar-role-chip">{{ auth.currentUser()?.role }}</span>
-              </div>
+            <button class="icon-btn" (click)="theme.toggle()"
+                    [matTooltip]="('menu.theme' | t)">
+              <mat-icon>{{ theme.resolved() === 'dark' ? 'light_mode' : 'dark_mode' }}</mat-icon>
+            </button>
+
+            <div class="lang-switch">
+              @for (l of languages; track l.code) {
+                <button [class.active]="i18n.lang() === l.code"
+                        (click)="setLang(l.code)">{{ l.code.toUpperCase() }}</button>
+              }
+            </div>
+
+            <div class="popover-host">
+              <button class="profile-btn" (click)="profileOpen.set(!profileOpen())">
+                <div class="avatar">{{ initials() }}</div>
+                <div class="profile-meta">
+                  <span class="profile-name">{{ auth.displayName() }}</span>
+                  <span class="profile-role">{{ roleKey() | t }}</span>
+                </div>
+                <mat-icon class="chev">expand_more</mat-icon>
+              </button>
+
+              @if (profileOpen()) {
+                <div class="menu profile-menu">
+                  <div class="profile-menu-head">
+                    <div class="avatar">{{ initials() }}</div>
+                    <div>
+                      <div class="strong">{{ auth.displayName() }}</div>
+                      <div class="small muted">{{ roleKey() | t }}</div>
+                    </div>
+                  </div>
+                  <div class="menu-sep"></div>
+                  <a class="menu-item" routerLink="/settings" (click)="profileOpen.set(false)">
+                    <mat-icon>settings</mat-icon> {{ 'menu.settings' | t }}
+                  </a>
+                  <div class="menu-sep"></div>
+                  <div class="theme-row">
+                    <mat-icon>contrast</mat-icon>
+                    <span class="small muted">{{ 'menu.theme' | t }}</span>
+                  </div>
+                  <div class="theme-opts">
+                    @for (m of themeModes; track m) {
+                      <button class="period-btn" [class.active]="theme.mode() === m"
+                              (click)="theme.set(m)">{{ ('menu.theme.' + m) | t }}</button>
+                    }
+                  </div>
+                  <div class="menu-sep"></div>
+                  <button class="menu-item danger" (click)="auth.logout()">
+                    <mat-icon>logout</mat-icon> {{ 'menu.logout' | t }}
+                  </button>
+                </div>
+              }
             </div>
           </div>
         </header>
 
-        <!-- Page content -->
-        <main class="page-area" role="main">
-          <router-outlet />
-        </main>
+        <main class="page"><router-outlet /></main>
       </div>
     </div>
   `,
   styles: [`
-    /* ── Shell ─────────────────────────────────────────────── */
-    .app-shell {
-      display: flex;
-      height: 100vh;
-      overflow: hidden;
-      --sb-width: 256px;
-      --sb-collapsed: 64px;
-    }
-    .app-shell.sidebar-collapsed { --sb-width: var(--sb-collapsed); }
-
-    /* ── Sidebar ────────────────────────────────────────────── */
+    .app-shell { display: flex; height: 100vh; overflow: hidden; }
     .sidebar {
-      width: var(--sb-width);
-      flex-shrink: 0;
-      background: #0f172a;
-      display: flex;
-      flex-direction: column;
-      transition: width 0.25s cubic-bezier(0.4,0,0.2,1);
-      overflow: hidden;
-      position: relative;
-      z-index: 200;
+      width: var(--sb); flex-shrink: 0; background: var(--sidebar);
+      display: flex; flex-direction: column; overflow: hidden; z-index: 200;
+      transition: width 220ms cubic-bezier(.22,.61,.36,1);
     }
+    .app-shell.collapsed { --sb: 68px; }
 
-    /* Brand area */
     .brand {
-      display: flex;
-      align-items: center;
-      gap: 11px;
-      padding: 18px 14px 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.06);
-      flex-shrink: 0;
+      display: flex; align-items: center; gap: 11px; padding: 17px 16px;
       min-height: 64px;
     }
     .brand-logo {
-      width: 36px; height: 36px;
-      background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-      border-radius: 9px;
+      width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
       display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
-      box-shadow: 0 2px 8px rgba(99,102,241,0.4);
-      mat-icon { color: white; font-size: 20px; width: 20px; height: 20px; }
+      box-shadow: 0 4px 12px rgba(99,102,241,.4);
+      mat-icon { color: #fff; font-size: 20px; width: 20px; height: 20px; }
     }
-    .brand-text { display: flex; align-items: center; gap: 6px; overflow: hidden; }
-    .brand-name { font-size: 16px; font-weight: 700; color: white; letter-spacing: -0.3px; white-space: nowrap; }
+    .brand-text { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+    .brand-name { color: #fff; font-weight: 700; font-size: 16px; }
     .brand-tag {
-      font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
-      background: rgba(99,102,241,0.25); color: #a5b4fc;
-      padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(99,102,241,0.3);
+      font-size: 10px; font-weight: 700; color: #c7d2fe; padding: 2px 6px;
+      border-radius: 5px; background: rgba(99,102,241,.28);
     }
 
-    /* Nav */
-    .nav {
-      flex: 1;
-      overflow-y: auto;
-      overflow-x: hidden;
-      padding: 10px 8px;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.1) transparent;
-    }
-    .nav-group-label {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.8px;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.28);
-      padding: 14px 8px 4px;
+    .nav { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 10px 10px; }
+    .group-label {
+      font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
+      color: rgba(255,255,255,.32); padding: 16px 8px 6px;
     }
     .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 9px 10px;
-      border-radius: 8px;
-      color: rgba(255,255,255,0.6);
-      text-decoration: none;
-      font-size: 13.5px;
-      font-weight: 500;
-      transition: background 0.15s, color 0.15s;
-      margin-bottom: 2px;
-      white-space: nowrap;
-      position: relative;
-      outline: none;
-
-      &:hover {
-        background: rgba(255,255,255,0.08);
-        color: rgba(255,255,255,0.92);
+      display: flex; align-items: center; gap: 11px; padding: 10px 11px; margin-bottom: 2px;
+      border-radius: 9px; color: rgba(255,255,255,.64); text-decoration: none;
+      font-size: 13.5px; font-weight: 500; white-space: nowrap; position: relative;
+      transition: background 160ms, color 160ms;
+      &:hover { background: rgba(255,255,255,.07); color: #fff; }
+      &.active { background: rgba(99,102,241,.2); color: #dbe0ff; }
+      &.active::before {
+        content: ''; position: absolute; left: -10px; top: 50%; transform: translateY(-50%);
+        width: 3px; height: 20px; border-radius: 0 3px 3px 0; background: #818cf8;
       }
-      &:focus-visible {
-        outline: 2px solid #6366f1;
-        outline-offset: 2px;
-      }
-    }
-    .nav-item.active {
-      background: rgba(99,102,241,0.18);
-      color: #c7d2fe;
-      &::before {
-        content: '';
-        position: absolute;
-        left: 0; top: 6px; bottom: 6px;
-        width: 3px;
-        background: #6366f1;
-        border-radius: 0 3px 3px 0;
-      }
-      .nav-icon { color: #818cf8; }
     }
     .nav-icon { font-size: 19px; width: 19px; height: 19px; flex-shrink: 0; }
-    .nav-label { flex: 1; }
+    .nav-label {
+      overflow: hidden; white-space: nowrap;
+      transition: opacity 140ms ease;
+    }
+    .app-shell.collapsed .nav-label { opacity: 0; width: 0; }
+    .group-label { transition: opacity 140ms ease; }
 
-    /* Sidebar footer */
-    .sidebar-footer {
-      padding: 12px 10px;
-      border-top: 1px solid rgba(255,255,255,0.06);
-      flex-shrink: 0;
-    }
-    .user-row { display: flex; align-items: center; gap: 9px; }
-    .user-avatar {
-      width: 32px; height: 32px; flex-shrink: 0;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 700; color: white;
-    }
-    .user-meta { flex: 1; min-width: 0; }
-    .user-name { font-size: 12.5px; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .user-role { font-size: 11px; color: rgba(255,255,255,0.38); text-transform: capitalize; }
-    .logout-btn {
-      background: none; border: none; cursor: pointer; padding: 0;
-      width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center;
-      color: rgba(255,255,255,0.35);
-      transition: background 0.15s, color 0.15s;
-      mat-icon { font-size: 17px; width: 17px; height: 17px; }
-      &:hover { background: rgba(239,68,68,0.15); color: #fca5a5; }
+    .sidebar-footer { padding: 10px; }
+    .collapse-btn {
+      display: flex; align-items: center; gap: 11px; width: 100%; padding: 10px 11px;
+      border: none; background: rgba(255,255,255,.05); border-radius: 9px;
+      color: rgba(255,255,255,.55); cursor: pointer; font-family: inherit;
+      font-size: 13px; font-weight: 500; white-space: nowrap;
+      &:hover { background: rgba(255,255,255,.1); color: #fff; }
+      mat-icon { font-size: 19px; width: 19px; height: 19px; }
     }
 
-    /* Mobile overlay */
-    .mobile-overlay {
-      display: none;
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.5);
-      z-index: 199;
-      backdrop-filter: blur(2px);
-    }
+    .overlay { display: none; }
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
-    /* ── Main area ──────────────────────────────────────────── */
-    .main-area {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      min-width: 0;
-    }
-
-    /* Top bar */
     .topbar {
-      height: 60px;
-      background: white;
-      border-bottom: 1px solid #e2e8f0;
-      display: flex;
-      align-items: center;
-      padding: 0 20px;
-      gap: 12px;
-      flex-shrink: 0;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+      height: 64px; background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 18px; gap: 14px; flex-shrink: 0;
       z-index: 10;
     }
-    .topbar-btn {
-      background: none; border: none; cursor: pointer;
-      width: 36px; height: 36px; border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      color: #64748b;
-      transition: background 0.15s, color 0.15s;
-      flex-shrink: 0;
-      mat-icon { font-size: 22px; }
-      &:hover { background: #f1f5f9; color: #0f172a; }
-    }
-    .topbar-right { margin-left: auto; }
-    .topbar-user { display: flex; align-items: center; gap: 9px; }
-    .topbar-avatar {
-      width: 32px; height: 32px;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 700; color: white;
-    }
-    .topbar-info { display: flex; align-items: center; gap: 7px; }
-    .topbar-name { font-size: 13.5px; font-weight: 600; color: #0f172a; }
-    .topbar-role-chip {
-      font-size: 11px; font-weight: 600; text-transform: capitalize;
-      background: #eef2ff; color: #4338ca;
-      padding: 2px 8px; border-radius: 10px; border: 1px solid #c7d2fe;
+    .hamburger { display: none; }
+    .page-crumb h2 { font-size: 17px; font-weight: 700; }
+
+    .global-search {
+      display: flex; align-items: center; gap: 9px; width: 100%; max-width: 360px;
+      height: 40px; padding: 0 13px; margin-left: 8px;
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: 10px; transition: border-color 160ms, box-shadow 160ms;
+      &:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-ring); }
+      mat-icon { font-size: 18px; width: 18px; height: 18px; color: var(--text-3); }
+      input {
+        flex: 1; border: none; outline: none; background: none;
+        font-family: inherit; font-size: 13.5px; color: var(--text); min-width: 0;
+        &::placeholder { color: var(--text-3); }
+      }
     }
 
-    /* Page area */
-    .page-area {
-      flex: 1;
-      overflow-y: auto;
-      background: #f1f5f9;
+    .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .lang-switch {
+      display: flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+      button {
+        border: none; background: var(--surface); padding: 7px 11px; font-size: 11.5px;
+        font-weight: 700; color: var(--text-3); cursor: pointer; font-family: inherit;
+        &.active { background: var(--primary-soft); color: var(--primary); }
+      }
     }
+    .profile-btn {
+      display: flex; align-items: center; gap: 10px; padding: 5px 10px 5px 5px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 24px;
+      cursor: pointer; font-family: inherit;
+      &:hover { background: var(--surface-2); }
+    }
+    .profile-meta { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.25; }
+    .profile-name { font-size: 13px; font-weight: 600; color: var(--text); }
+    .profile-role { font-size: 11px; color: var(--text-3); }
+    .chev { font-size: 18px; width: 18px; height: 18px; color: var(--text-3); }
 
-    /* ── Mobile ─────────────────────────────────────────────── */
-    @media (max-width: 768px) {
+    .profile-menu { right: 0; top: calc(100% + 8px); min-width: 240px; }
+    .profile-menu-head { display: flex; align-items: center; gap: 11px; padding: 10px; }
+    .theme-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px 4px; }
+    .theme-row mat-icon { font-size: 18px; width: 18px; height: 18px; color: var(--text-3); }
+    .theme-opts { display: flex; gap: 6px; padding: 4px 8px 6px; }
+    .theme-opts .period-btn { flex: 1; }
+
+    .page { flex: 1; overflow-y: auto; background: var(--bg); }
+
+    @media (max-width: 980px) { .global-search { display: none; } }
+    @media (max-width: 820px) {
       .sidebar {
-        position: fixed;
-        left: 0; top: 0; bottom: 0;
+        position: fixed; inset: 0 auto 0 0; width: 250px !important;
         transform: translateX(-100%);
-        transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
-        z-index: 200;
-        width: 256px !important;
+        transition: transform 220ms cubic-bezier(.22,.61,.36,1);
       }
       .sidebar.mobile-open { transform: translateX(0); }
-      .mobile-overlay { display: block; }
-      .app-shell { --sb-width: 0px; }
+      .sidebar .nav-label { opacity: 1 !important; width: auto !important; }
+      .overlay {
+        display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 199;
+        animation: fadeIn 160ms ease;
+      }
+      .hamburger { display: inline-flex; }
+      .profile-meta, .chev { display: none; }
+      .page-crumb h2 { font-size: 15px; }
     }
-  `]
+  `],
 })
 export class MainLayoutComponent {
   auth = inject(AuthService);
-  sidebarCollapsed = signal(false);
-  mobileSidebarOpen = signal(false);
+  i18n = inject(TranslationService);
+  theme = inject(ThemeService);
+  private router = inject(Router);
 
-  @HostListener('window:resize')
-  onResize() {
-    if (window.innerWidth <= 768) this.sidebarCollapsed.set(false);
+  readonly languages = LANGUAGES;
+  readonly themeModes: ThemeMode[] = ['light', 'dark', 'system'];
+
+  collapsed = signal(localStorage.getItem('brandx_sidebar') === 'collapsed');
+  mobileOpen = signal(false);
+  profileOpen = signal(false);
+  globalQuery = '';
+
+  private currentUrl = signal(this.router.url);
+
+  constructor() {
+    this.router.events
+      .pipe(filter(e => e instanceof NavigationEnd))
+      .subscribe((e: any) => {
+        this.currentUrl.set(e.urlAfterRedirects || e.url);
+        this.profileOpen.set(false);
+      });
   }
 
-  toggleSidebar() {
-    if (window.innerWidth <= 768) {
-      this.mobileSidebarOpen.update(v => !v);
-    } else {
-      this.sidebarCollapsed.update(v => !v);
-    }
-  }
+  readonly initials = computed(() => {
+    const name = this.auth.displayName();
+    return name ? name.trim().charAt(0).toUpperCase() : '?';
+  });
+
+  readonly roleKey = computed(() => `role.${this.auth.role() ?? 'cashier'}`);
+
+  readonly titleKey = computed(() => {
+    const segment = this.currentUrl().split('?')[0].split('/').filter(Boolean)[0] ?? 'dashboard';
+    return TITLE_KEYS[segment] ?? 'app.name';
+  });
 
   private navGroups: NavGroup[] = [
     {
-      group: 'Main',
+      key: 'group.main',
       items: [
-        { label: 'Dashboard',     icon: 'dashboard',      route: '/dashboard' },
-        { label: 'New Sale',      icon: 'point_of_sale',  route: '/pos' },
-      ]
+        { key: 'menu.dashboard', icon: 'dashboard', route: '/dashboard' },
+        { key: 'menu.pos', icon: 'point_of_sale', route: '/pos' },
+      ],
     },
     {
-      group: 'Catalog',
+      key: 'group.catalog',
       items: [
-        { label: 'Products',      icon: 'inventory_2',    route: '/products' },
-        { label: 'Categories',    icon: 'category',       route: '/categories', roles: ['admin', 'manager'] },
-        { label: 'Colors',        icon: 'palette',        route: '/colors',     roles: ['admin', 'manager'] },
-        { label: 'Sizes',         icon: 'straighten',     route: '/sizes',      roles: ['admin', 'manager'] },
-      ]
+        { key: 'menu.products', icon: 'inventory_2', route: '/products' },
+        { key: 'menu.categories', icon: 'category', route: '/categories', roles: MANAGER },
+      ],
     },
     {
-      group: 'Operations',
+      key: 'group.operations',
       items: [
-        { label: 'Inventory',     icon: 'warehouse',      route: '/inventory',  roles: ['admin', 'manager'] },
-        { label: 'Vendors',       icon: 'local_shipping', route: '/vendors',    roles: ['admin', 'manager'] },
-        { label: 'Customers',     icon: 'people',         route: '/customers' },
-        { label: 'Sales History', icon: 'receipt_long',   route: '/sales' },
-      ]
+        { key: 'menu.stock', icon: 'warehouse', route: '/stock', roles: MANAGER },
+        { key: 'menu.receipts', icon: 'move_to_inbox', route: '/receipts', roles: MANAGER },
+        { key: 'menu.sales', icon: 'receipt_long', route: '/sales' },
+        { key: 'menu.finance', icon: 'account_balance_wallet', route: '/finance', roles: MANAGER },
+      ],
     },
     {
-      group: 'Analytics',
+      key: 'group.analytics',
       items: [
-        { label: 'Reports',       icon: 'bar_chart',      route: '/reports',    roles: ['admin', 'manager'] },
-        { label: 'Settings',      icon: 'settings',       route: '/settings',   roles: ['admin'] },
-      ]
+        { key: 'menu.reports', icon: 'bar_chart', route: '/reports', roles: MANAGER },
+      ],
+    },
+    {
+      key: 'group.admin',
+      items: [
+        { key: 'menu.employees', icon: 'badge', route: '/employees', roles: ['owner'] },
+        { key: 'menu.settings', icon: 'settings', route: '/settings' },
+      ],
     },
   ];
 
-  visibleNavGroups() {
-    const role = this.auth.currentUser()?.role ?? '';
+  readonly visibleGroups = computed(() => {
+    const role = this.auth.role() ?? '';
     return this.navGroups
-      .map(g => ({ ...g, items: g.items.filter(i => !i.roles || i.roles.includes(role)) }))
+      .map(g => ({
+        ...g,
+        items: g.items.filter(i => !i.roles || i.roles.includes(role)),
+      }))
       .filter(g => g.items.length > 0);
+  });
+
+  @HostListener('window:resize')
+  onResize() {
+    if (window.innerWidth <= 820) this.collapsed.set(false);
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape() {
+    this.profileOpen.set(false);
+  }
+
+  toggle() {
+    if (window.innerWidth <= 820) {
+      this.mobileOpen.update(v => !v);
+    } else {
+      this.collapsed.update(v => !v);
+      localStorage.setItem('brandx_sidebar', this.collapsed() ? 'collapsed' : 'expanded');
+    }
+  }
+
+  runGlobalSearch() {
+    const q = this.globalQuery.trim();
+    this.router.navigate(['/products'], { queryParams: q ? { q } : {} });
+    this.globalQuery = '';
+  }
+
+  setLang(lang: Lang) {
+    this.auth.persistLanguage(lang);
   }
 }

@@ -2,5 +2,6 @@ export const environment = {
   production: true,
   apiUrl: '/api',
   appName: 'BrandX POS',
-  currency: '$',
+  currency: 'сом',
+  defaultLang: 'uz',
 };

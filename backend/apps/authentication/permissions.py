@@ -1,20 +1,41 @@
-"""Authentication Permissions - Role-Based Access Control"""
+"""Authentication Permissions - Role-Based Access Control (owner/manager/cashier)"""
 from rest_framework.permissions import BasePermission
 
 
-class IsAdmin(BasePermission):
-    """Allow access only to admin users."""
-    def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.is_admin)
+def _role(request):
+    user = getattr(request, 'user', None)
+    if not user or not user.is_authenticated:
+        return None
+    return user.role
 
 
-class IsAdminOrManager(BasePermission):
-    """Allow access to admin and manager users."""
+class IsOwner(BasePermission):
+    """Owner only - full access, including money/profit."""
+
+    message = 'Only the owner can perform this action.'
+
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.is_manager)
+        return _role(request) == 'owner'
+
+
+class IsOwnerOrManager(BasePermission):
+    """Owner + manager (operational access, no profit data)."""
+
+    message = 'Only the owner or a manager can perform this action.'
+
+    def has_permission(self, request, view):
+        return _role(request) in ('owner', 'manager')
 
 
 class IsAuthenticatedWithRole(BasePermission):
-    """Allow any authenticated user, but limit actions by role."""
+    """Any authenticated employee."""
+
+    message = 'Authentication required.'
+
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated)
+        return _role(request) is not None
+
+
+# Backwards-compatible aliases (older imports)
+IsAdmin = IsOwner
+IsAdminOrManager = IsOwnerOrManager

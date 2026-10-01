@@ -1,34 +1,50 @@
+import { HttpClient, HttpErrorResponse, HttpHandlerFn, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { inject } from '@angular/core';
-import { HttpInterceptorFn, HttpRequest, HttpHandlerFn, HttpErrorResponse } from '@angular/common/http';
 import { catchError, switchMap, throwError } from 'rxjs';
+import { environment } from '../../../environments/environment';
 import { AuthService } from '../services/auth.service';
-import { Router } from '@angular/router';
 
-export const authInterceptor: HttpInterceptorFn = (req: HttpRequest<unknown>, next: HttpHandlerFn) => {
-  const authService = inject(AuthService);
-  const router = inject(Router);
+interface RefreshResponse {
+  access: string;
+}
 
-  const token = authService.getAccessToken();
-  const authReq = token
+/** Attaches the JWT and transparently refreshes it once after a 401. */
+export const authInterceptor: HttpInterceptorFn = (
+  req: HttpRequest<unknown>,
+  next: HttpHandlerFn,
+) => {
+  const auth = inject(AuthService);
+  const http = inject(HttpClient);
+
+  const token = auth.getAccessToken();
+  const authorized = token
     ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } })
     : req;
 
-  return next(authReq).pipe(
+  const isAuthCall =
+    req.url.includes('/auth/login') || req.url.includes('/auth/token/refresh');
+
+  return next(authorized).pipe(
     catchError((error: HttpErrorResponse) => {
-      if (error.status === 401 && !req.url.includes('/auth/login/')) {
-        return authService.refreshToken().pipe(
-          switchMap(() => {
-            const newToken = authService.getAccessToken();
-            const retryReq = req.clone({ setHeaders: { Authorization: `Bearer ${newToken}` } });
-            return next(retryReq);
-          }),
-          catchError(() => {
-            authService.logout();
-            return throwError(() => error);
-          })
-        );
+      const refresh = auth.getRefreshToken();
+
+      if (error.status !== 401 || isAuthCall || !refresh) {
+        if (error.status === 401 && !isAuthCall) auth.logout();
+        return throwError(() => error);
       }
-      return throwError(() => error);
-    })
+
+      return http.post<RefreshResponse>(
+        `${environment.apiUrl}/auth/token/refresh/`, { refresh },
+      ).pipe(
+        switchMap(res => {
+          auth.updateAccessToken(res.access);
+          return next(req.clone({ setHeaders: { Authorization: `Bearer ${res.access}` } }));
+        }),
+        catchError(refreshError => {
+          auth.logout();
+          return throwError(() => refreshError);
+        }),
+      );
+    }),
   );
 };

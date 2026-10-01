@@ -1,199 +1,247 @@
-﻿import { Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Component, HostListener, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
-import { MatTableModule } from '@angular/material/table';
-import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatInputModule } from '@angular/material/input';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
-import { MatSelectModule } from '@angular/material/select';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { MatTooltipModule } from '@angular/material/tooltip';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { MoneyPipe, TranslatePipe } from '../../../core/i18n/translate.pipe';
+import { TranslationService } from '../../../core/i18n/translation.service';
+import { Category, Product } from '../../../core/models/models';
 import { ApiService } from '../../../core/services/api.service';
 import { AuthService } from '../../../core/services/auth.service';
-import { Category, Product } from '../../../core/models/models';
+import { ConfirmService } from '../../../core/ui/confirm.service';
+import { ToastService } from '../../../core/ui/toast.service';
 
 @Component({
   selector: 'app-product-list',
   standalone: true,
-  imports: [
-    CommonModule, FormsModule, RouterLink,
-    MatTableModule, MatButtonModule, MatIconModule, MatInputModule,
-    MatFormFieldModule, MatPaginatorModule, MatSelectModule,
-    MatProgressBarModule, MatSnackBarModule, MatTooltipModule,
-  ],
+  imports: [CommonModule, FormsModule, RouterLink, MatIconModule, TranslatePipe, MoneyPipe],
   template: `
-    <div class="page-container">
-      <div class="page-header">
-        <h1>Products</h1>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">{{ 'products.title' | t }}</h1>
+        <div class="page-sub">{{ count() }} {{ 'products.title' | t }}</div>
+      </div>
+      <div class="toolbar">
+        <div class="search-box" style="width:250px">
+          <mat-icon>search</mat-icon>
+          <input [(ngModel)]="search" (input)="onSearch()"
+                 [placeholder]="'common.search' | t">
+        </div>
+        <select class="select" style="width:190px" [(ngModel)]="categoryFilter" (change)="load()">
+          <option value="">{{ 'common.all' | t }}</option>
+          @for (c of categories(); track c.id) {
+            <option [value]="c.id">{{ c.name }}</option>
+          }
+        </select>
         @if (auth.isManager()) {
-          <button mat-raised-button color="primary" routerLink="/products/new">
-            <mat-icon>add</mat-icon> Add Product
-          </button>
+          <a class="btn primary" routerLink="/products/new">
+            <mat-icon>add</mat-icon> {{ 'products.new' | t }}
+          </a>
         }
       </div>
+    </div>
 
-      <!-- Filters -->
-      <div class="filter-bar">
-        <mat-form-field appearance="outline" style="min-width:260px">
-          <mat-label>Search</mat-label>
-          <input matInput [(ngModel)]="searchQuery" (input)="applyFilters()" placeholder="Name or barcode">
-          <mat-icon matSuffix>search</mat-icon>
-        </mat-form-field>
-        <mat-form-field appearance="outline" style="min-width:180px">
-          <mat-label>Category</mat-label>
-          <mat-select [(ngModel)]="categoryFilter" (selectionChange)="applyFilters()">
-            <mat-option value="">All Categories</mat-option>
-            @for (cat of categories(); track cat.id) {
-              <mat-option [value]="cat.id">{{ cat.name }}</mat-option>
+    <div class="page-body">
+      <div class="card pad-0">
+        @if (loading()) {
+          <div style="padding:16px">
+            @for (i of [1,2,3,4,5]; track i) {
+              <div class="skeleton skeleton-line" style="height:34px;margin-bottom:8px"></div>
             }
-          </mat-select>
-        </mat-form-field>
-        <mat-form-field appearance="outline" style="min-width:140px">
-          <mat-label>Status</mat-label>
-          <mat-select [(ngModel)]="statusFilter" (selectionChange)="applyFilters()">
-            <mat-option value="">All</mat-option>
-            <mat-option value="true">Active</mat-option>
-            <mat-option value="false">Inactive</mat-option>
-          </mat-select>
-        </mat-form-field>
-      </div>
+          </div>
+        } @else if (products().length) {
+          <div class="table-wrap">
+            <table class="data">
+              <thead>
+                <tr>
+                  <th>{{ 'products.name' | t }}</th>
+                  <th>{{ 'common.category' | t }}</th>
+                  <th>{{ 'products.barcode' | t }}</th>
+                  @if (auth.canViewFinancials()) {
+                    <th class="num">{{ 'products.costPrice' | t }}</th>
+                  }
+                  <th class="num">{{ 'products.sellingPrice' | t }}</th>
+                  <th class="num">{{ 'products.stock' | t }}</th>
+                  <th>{{ 'common.status' | t }}</th>
+                  @if (auth.isManager()) { <th class="actions"></th> }
+                </tr>
+              </thead>
+              <tbody>
+                @for (p of products(); track p.id) {
+                  <tr>
+                    <td>
+                      <div class="cell-media">
+                        <div class="thumb">
+                          @if (p.image) { <img [src]="p.image" [alt]="p.name"> }
+                          @else { <mat-icon>checkroom</mat-icon> }
+                        </div>
+                        <span class="strong">{{ p.name }}</span>
+                      </div>
+                    </td>
+                    <td>{{ p.category_name || '—' }}</td>
+                    <td class="small muted">{{ p.barcode }}</td>
+                    @if (auth.canViewFinancials()) {
+                      <td class="num muted">{{ p.base_cost_price | money }}</td>
+                    }
+                    <td class="num strong">{{ p.base_selling_price | money }}</td>
+                    <td class="num">
+                      <span class="badge" [class.danger]="p.total_stock <= 0"
+                            [class.warn]="p.total_stock > 0 && p.total_stock <= p.low_stock_threshold">
+                        {{ p.total_stock }}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="badge" [class.success]="p.is_active" [class.danger]="!p.is_active">
+                        <span class="dot"></span>
+                        {{ (p.is_active ? 'common.active' : 'common.inactive') | t }}
+                      </span>
+                    </td>
+                    @if (auth.isManager()) {
+                      <td class="actions">
+                        <div class="popover-host">
+                          <button class="icon-btn" (click)="toggleMenu(p.id); $event.stopPropagation()">
+                            <mat-icon>more_horiz</mat-icon>
+                          </button>
+                          @if (openMenuId() === p.id) {
+                            <div class="menu" style="right:0;top:calc(100% + 4px)"
+                                 (click)="$event.stopPropagation()">
+                              <a class="menu-item" [routerLink]="['/products', p.id, 'edit']">
+                                <mat-icon>edit</mat-icon> {{ 'common.edit' | t }}
+                              </a>
+                              <a class="menu-item" routerLink="/stock"
+                                 [queryParams]="{ q: p.barcode }">
+                                <mat-icon>warehouse</mat-icon> {{ 'menu.stock' | t }}
+                              </a>
+                              <div class="menu-sep"></div>
+                              <button class="menu-item danger" (click)="deactivate(p)">
+                                <mat-icon>{{ p.is_active ? 'visibility_off' : 'delete' }}</mat-icon>
+                                {{ p.is_active ? ('employees.deactivate' | t) : ('common.delete' | t) }}
+                              </button>
+                            </div>
+                          }
+                        </div>
+                      </td>
+                    }
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
 
-      @if (loading) { <mat-progress-bar mode="indeterminate" style="border-radius:4px;margin-bottom:4px" /> }
-
-      <div class="data-table-container">
-        <table mat-table [dataSource]="products()">
-          <ng-container matColumnDef="image">
-            <th mat-header-cell *matHeaderCellDef></th>
-            <td mat-cell *matCellDef="let p" style="width:64px">
-              @if (p.image) {
-                <img [src]="p.image" class="product-thumb" [alt]="p.name">
-              } @else {
-                <div class="no-image"><mat-icon>checkroom</mat-icon></div>
-              }
-            </td>
-          </ng-container>
-          <ng-container matColumnDef="name">
-            <th mat-header-cell *matHeaderCellDef>Product</th>
-            <td mat-cell *matCellDef="let p">
-              <div class="fw-600" style="color:#0f172a">{{ p.name }}</div>
-              <code style="font-size:11px">{{ p.barcode }}</code>
-            </td>
-          </ng-container>
-          <ng-container matColumnDef="category">
-            <th mat-header-cell *matHeaderCellDef>Category</th>
-            <td mat-cell *matCellDef="let p" style="color:#64748b">{{ p.category_name || 'â€”' }}</td>
-          </ng-container>
-          <ng-container matColumnDef="price">
-            <th mat-header-cell *matHeaderCellDef>Price</th>
-            <td mat-cell *matCellDef="let p" class="fw-600">{{ p.base_selling_price | currency }}</td>
-          </ng-container>
-          <ng-container matColumnDef="stock">
-            <th mat-header-cell *matHeaderCellDef>Stock</th>
-            <td mat-cell *matCellDef="let p">
-              <span [class]="'badge ' + stockBadge(p.total_stock)">
-                {{ p.total_stock }}
-              </span>
-            </td>
-          </ng-container>
-          <ng-container matColumnDef="status">
-            <th mat-header-cell *matHeaderCellDef>Status</th>
-            <td mat-cell *matCellDef="let p">
-              <span [class]="'badge ' + (p.is_active ? 'badge-success' : 'badge-default')">
-                {{ p.is_active ? 'Active' : 'Inactive' }}
-              </span>
-            </td>
-          </ng-container>
-          <ng-container matColumnDef="actions">
-            <th mat-header-cell *matHeaderCellDef></th>
-            <td mat-cell *matCellDef="let p">
-              @if (auth.isManager()) {
-                <button mat-icon-button [routerLink]="['/products', p.id, 'edit']" matTooltip="Edit product">
-                  <mat-icon style="color:#6366f1">edit</mat-icon>
-                </button>
-                <button mat-icon-button (click)="toggleActive(p)"
-                  [matTooltip]="p.is_active ? 'Deactivate' : 'Activate'">
-                  <mat-icon [style.color]="p.is_active ? '#ef4444' : '#10b981'">
-                    {{ p.is_active ? 'visibility_off' : 'visibility' }}
-                  </mat-icon>
-                </button>
-              }
-            </td>
-          </ng-container>
-
-          <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-          <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
-        </table>
-
-        <mat-paginator
-          [length]="totalCount"
-          [pageSize]="pageSize"
-          [pageSizeOptions]="[10, 20, 50]"
-          (page)="onPageChange($event)">
-        </mat-paginator>
+          @if (count() > pageSize) {
+            <div class="pagination">
+              <button class="btn sm" [disabled]="page === 1" (click)="goTo(page - 1)">
+                <mat-icon>chevron_left</mat-icon>
+              </button>
+              <span class="page-info">{{ page }} / {{ totalPages() }}</span>
+              <button class="btn sm" [disabled]="page >= totalPages()" (click)="goTo(page + 1)">
+                <mat-icon>chevron_right</mat-icon>
+              </button>
+            </div>
+          }
+        } @else {
+          <div class="empty-state">
+            <mat-icon>inventory_2</mat-icon>
+            <h4>{{ 'products.emptyTitle' | t }}</h4>
+            <p>{{ 'products.emptyHint' | t }}</p>
+            @if (auth.isManager()) {
+              <a class="btn primary" routerLink="/products/new">
+                <mat-icon>add</mat-icon> {{ 'products.new' | t }}
+              </a>
+            }
+          </div>
+        }
       </div>
     </div>
   `,
   styles: [`
-    .product-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; }
-    .no-image {
-      width: 44px; height: 44px; display: flex; align-items: center;
-      justify-content: center; background: #f1f5f9; border-radius: 8px;
-      mat-icon { color: #cbd5e1; font-size: 20px; }
+    .cell-media { display: flex; align-items: center; gap: 11px; }
+    .thumb {
+      width: 36px; height: 36px; border-radius: 9px; flex-shrink: 0; overflow: hidden;
+      background: var(--surface-3); display: flex; align-items: center; justify-content: center;
+      img { width: 100%; height: 100%; object-fit: cover; }
+      mat-icon { font-size: 19px; width: 19px; height: 19px; color: var(--text-3); }
     }
-  `]
+    .popover-host { display: inline-block; }
+    td.actions .menu { min-width: 180px; }
+  `],
 })
 export class ProductListComponent implements OnInit {
   private api = inject(ApiService);
+  private toast = inject(ToastService);
+  private confirm = inject(ConfirmService);
+  private i18n = inject(TranslationService);
+  private route = inject(ActivatedRoute);
   auth = inject(AuthService);
-  private snackBar = inject(MatSnackBar);
 
   products = signal<Product[]>([]);
   categories = signal<Category[]>([]);
-  loading = false;
-  totalCount = 0;
-  pageSize = 20;
-  currentPage = 1;
-  searchQuery = '';
-  statusFilter = '';
-  categoryFilter: number | '' = '';
-  displayedColumns = ['image', 'name', 'category', 'price', 'stock', 'status', 'actions'];
+  count = signal(0);
+  loading = signal(true);
+  openMenuId = signal<number | null>(null);
+
+  search = '';
+  categoryFilter = '';
+  page = 1;
+  readonly pageSize = 20;
+
+  private timer: any = null;
 
   ngOnInit() {
-    this.loadProducts();
-    this.api.getAllCategories().subscribe(cats => this.categories.set(cats));
+    this.search = this.route.snapshot.queryParamMap.get('q') ?? '';
+    this.api.getCategories({ page_size: 200 }).subscribe(res => this.categories.set(res.results));
+    this.load();
   }
 
-  loadProducts() {
-    this.loading = true;
-    const params: any = { page: this.currentPage, page_size: this.pageSize };
-    if (this.searchQuery) params.search = this.searchQuery;
-    if (this.statusFilter !== '') params.is_active = this.statusFilter;
-    if (this.categoryFilter !== '') params.category = this.categoryFilter;
-    this.api.getProducts(params).subscribe({
-      next: (res) => { this.products.set(res.results); this.totalCount = res.count; this.loading = false; },
-      error: () => { this.loading = false; }
+  @HostListener('document:click')
+  closeMenu() {
+    this.openMenuId.set(null);
+  }
+
+  onSearch() {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => { this.page = 1; this.load(); }, 250);
+  }
+
+  load() {
+    this.loading.set(true);
+    this.api.getProducts({
+      page: this.page,
+      search: this.search || undefined,
+      category: this.categoryFilter || undefined,
+    }).subscribe(res => {
+      this.products.set(res.results);
+      this.count.set(res.count);
+      this.loading.set(false);
     });
   }
 
-  applyFilters() { this.currentPage = 1; this.loadProducts(); }
-  onPageChange(event: PageEvent) { this.currentPage = event.pageIndex + 1; this.pageSize = event.pageSize; this.loadProducts(); }
-
-  stockBadge(qty: number) {
-    if (qty <= 0) return 'badge-danger';
-    if (qty <= 5) return 'badge-warning';
-    return 'badge-success';
+  totalPages() {
+    return Math.max(1, Math.ceil(this.count() / this.pageSize));
   }
 
-  toggleActive(product: Product) {
-    const data = new FormData();
-    data.append('is_active', String(!product.is_active));
-    this.api.updateProduct(product.id, data).subscribe({
-      next: () => this.loadProducts(),
-      error: () => this.snackBar.open('Update failed', 'Close', { duration: 3000 })
+  goTo(page: number) {
+    this.page = page;
+    this.load();
+  }
+
+  toggleMenu(id: number) {
+    this.openMenuId.update(current => (current === id ? null : id));
+  }
+
+  async deactivate(product: Product) {
+    this.openMenuId.set(null);
+    const approved = await this.confirm.confirm({
+      title: this.i18n.t('products.deactivateTitle'),
+      message: `${product.name} — ${this.i18n.t('products.deactivateHint')}`,
+      confirmLabel: this.i18n.t('common.confirm'),
+      danger: true,
+    });
+    if (!approved) return;
+
+    this.api.deactivateProduct(product.id).subscribe({
+      next: () => { this.toast.success(this.i18n.t('common.saved')); this.load(); },
+      error: () => this.toast.error(this.i18n.t('common.error')),
     });
   }
 }

@@ -5,11 +5,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.authentication.permissions import IsAdminOrManager, IsAuthenticatedWithRole
+from apps.common.tenancy import TenantViewMixin
 from .models import Vendor, VendorTransaction
 from .serializers import VendorSerializer, VendorListSerializer, VendorTransactionSerializer
 
 
-class VendorViewSet(viewsets.ModelViewSet):
+class VendorViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = Vendor.objects.order_by('name')
     search_fields = ['name', 'phone', 'email', 'company_name']
     filterset_fields = ['is_active']
@@ -60,7 +61,7 @@ class VendorViewSet(viewsets.ModelViewSet):
         return Response({'detail': 'Payment recorded.', 'new_balance': vendor.balance})
 
 
-class VendorTransactionViewSet(viewsets.ModelViewSet):
+class VendorTransactionViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = VendorTransaction.objects.select_related('vendor', 'created_by').order_by('-date')
     serializer_class = VendorTransactionSerializer
     filterset_fields = ['vendor', 'transaction_type']

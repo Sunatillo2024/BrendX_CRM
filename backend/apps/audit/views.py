@@ -3,11 +3,12 @@ from rest_framework import viewsets
 
 from apps.authentication.permissions import IsOwnerOrManager
 
+from apps.common.tenancy import TenantViewMixin
 from .models import AuditLog
 from .serializers import AuditLogSerializer
 
 
-class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+class AuditLogViewSet(TenantViewMixin, viewsets.ReadOnlyModelViewSet):
     """
     WHO / WHAT / WHEN trail.
 

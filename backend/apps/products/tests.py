@@ -3,17 +3,19 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.authentication.models import User
+from apps.stores.models import Store
 
 
 class CatalogBase(APITestCase):
     def setUp(self):
+        self.store = Store.objects.create(name='Test', code='TEST')
         self.client = APIClient()
         self.owner = self._user('owner', User.ROLE_OWNER)
         self.manager = self._user('manager', User.ROLE_MANAGER)
         self.cashier = self._user('cashier', User.ROLE_CASHIER)
 
     def _user(self, username, role):
-        user = User(username=username, role=role, first_name=username.title())
+        user = User(store=self.store, username=username, role=role, first_name=username.title())
         user.set_password('StrongPass!234')
         user.set_pin('0000' if role == User.ROLE_OWNER else '1111')
         user.save()
@@ -77,6 +79,7 @@ class ProductTests(CatalogBase):
     def setUp(self):
         super().setUp()
         self.auth(self.owner)
+        self.size_id = self.client.post('/api/products/sizes/', {'name':'M','size_type':'letter'}, format='json').data['id']
         self.category_id = self.client.post(
             '/api/products/categories/', {'name': 'Futbolka'}, format='json'
         ).data['id']
@@ -90,7 +93,7 @@ class ProductTests(CatalogBase):
             'description': 'Paxta futbolka',
             'variants': [
                 {'color': None, 'size': None, 'stock_quantity': 5},
-                {'color': None, 'size': None, 'stock_quantity': 3},
+                {'color': None, 'size': self.size_id, 'stock_quantity': 3},
             ],
         }
         data.update(overrides)

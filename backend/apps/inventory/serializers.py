@@ -6,10 +6,13 @@ from rest_framework import serializers
 from apps.products.models import ProductVariant
 from apps.vendors.models import Vendor
 
+from apps.common.tenancy import TenantSerializerMixin
+from apps.common.serializers import OwnerOnlyFieldsMixin
 from .models import StockMovement, StockReceipt, StockReceiptItem
 
 
-class StockReceiptItemSerializer(serializers.ModelSerializer):
+class StockReceiptItemSerializer(OwnerOnlyFieldsMixin, serializers.ModelSerializer):
+    owner_only_fields = ('cost_price', 'total_cost')
     variant_display = serializers.CharField(source='product_variant.__str__', read_only=True)
     product_name = serializers.CharField(source='product_variant.product.name', read_only=True)
     color_name = serializers.CharField(source='product_variant.color.name', read_only=True, default=None)
@@ -22,14 +25,15 @@ class StockReceiptItemSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'total_cost']
 
 
-class StockReceiptItemWriteSerializer(serializers.Serializer):
+class StockReceiptItemWriteSerializer(TenantSerializerMixin, serializers.Serializer):
     product_variant = serializers.PrimaryKeyRelatedField(queryset=ProductVariant.objects.all())
     quantity = serializers.IntegerField(min_value=1)
     cost_price = serializers.DecimalField(max_digits=10, decimal_places=2,
                                           min_value=Decimal('0'))
 
 
-class StockReceiptSerializer(serializers.ModelSerializer):
+class StockReceiptSerializer(OwnerOnlyFieldsMixin, serializers.ModelSerializer):
+    owner_only_fields = ('total_cost',)
     items = StockReceiptItemSerializer(many=True, read_only=True)
     vendor_name = serializers.CharField(source='vendor.name', read_only=True, default=None)
     created_by_name = serializers.CharField(source='created_by.display_name', read_only=True, default=None)
@@ -41,7 +45,7 @@ class StockReceiptSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'number', 'total_quantity', 'total_cost', 'created_at']
 
 
-class StockReceiptWriteSerializer(serializers.Serializer):
+class StockReceiptWriteSerializer(TenantSerializerMixin, serializers.Serializer):
     vendor = serializers.PrimaryKeyRelatedField(
         queryset=Vendor.objects.all(), required=False, allow_null=True
     )
@@ -61,7 +65,8 @@ class StockReceiptWriteSerializer(serializers.Serializer):
         return value
 
 
-class StockMovementSerializer(serializers.ModelSerializer):
+class StockMovementSerializer(OwnerOnlyFieldsMixin, serializers.ModelSerializer):
+    owner_only_fields = ('unit_cost',)
     variant_display = serializers.CharField(source='product_variant.__str__', read_only=True)
     product_name = serializers.CharField(source='product_variant.product.name', read_only=True)
     color_name = serializers.CharField(source='product_variant.color.name', read_only=True, default=None)
@@ -76,7 +81,7 @@ class StockMovementSerializer(serializers.ModelSerializer):
                   'created_by_name', 'created_at']
 
 
-class StockAdjustWriteSerializer(serializers.Serializer):
+class StockAdjustWriteSerializer(TenantSerializerMixin, serializers.Serializer):
     """Manual adjustment or inventory count."""
     MODE_DELTA = 'delta'
     MODE_COUNTED = 'counted'

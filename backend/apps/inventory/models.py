@@ -8,13 +8,14 @@ This app records *how* it changed:
   - StockMovement     : audit trail of every quantity change
 """
 from django.db import models
+from apps.stores.models import StoreOwned
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
-class StockReceipt(models.Model):
+class StockReceipt(StoreOwned):
     """Goods receipt document: stock in from a vendor."""
-    number = models.PositiveIntegerField(unique=True, db_index=True)
+    number = models.PositiveIntegerField()
     receipt_date = models.DateField(default=timezone.localdate, db_index=True)
     vendor = models.ForeignKey(
         'vendors.Vendor', on_delete=models.SET_NULL, null=True, blank=True,
@@ -33,6 +34,8 @@ class StockReceipt(models.Model):
         verbose_name = _('Stock receipt')
         verbose_name_plural = _('Stock receipts')
         ordering = ['-number']
+        constraints = [models.UniqueConstraint(fields=['store', 'number'], name='stock_receipt_store_number')]
+        indexes = [models.Index(fields=['store', '-receipt_date'])]
 
     def __str__(self):
         return f'Поступление №{self.number}'

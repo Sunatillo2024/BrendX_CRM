@@ -33,6 +33,12 @@ def change_stock(variant, delta, movement_type, *, user=None, reason='', unit_co
     ``delta`` is positive for stock in, negative for stock out.
     Returns the created StockMovement.
     """
+    if user is not None:
+        from apps.common.tenancy import active_store
+        store = active_store(user)
+        if variant.store_id != store.pk or (sale and sale.store_id != store.pk) or (receipt and receipt.store_id != store.pk):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Cross-store stock operation denied.')
     locked = ProductVariant.objects.select_for_update().get(pk=variant.pk)
     before = locked.stock_quantity
     after = before + int(delta)
@@ -71,7 +77,12 @@ def receive_stock(*, items, user=None, vendor=None, receipt_date=None, notes='')
     ``items`` is a list of dicts: {'product_variant': <id|instance>, 'quantity': int,
     'cost_price': Decimal}.
     """
-    receipt = StockReceipt(number=StockReceipt.next_number(), vendor=vendor, notes=notes or '')
+    from apps.common.tenancy import active_store
+    store = active_store(user)
+    if vendor and vendor.store_id != store.pk:
+        from rest_framework.exceptions import PermissionDenied
+        raise PermissionDenied('Cross-store vendor denied.')
+    receipt = StockReceipt(store=store, number=store.next_number('receipt'), vendor=vendor, notes=notes or '')
     if receipt_date:
         receipt.receipt_date = receipt_date
     receipt.created_by = user if getattr(user, 'pk', None) else None
@@ -80,7 +91,7 @@ def receive_stock(*, items, user=None, vendor=None, receipt_date=None, notes='')
     for row in items:
         variant = row['product_variant']
         if not isinstance(variant, ProductVariant):
-            variant = ProductVariant.objects.get(pk=variant)
+            variant = ProductVariant.objects.get(pk=variant, store=store)
         quantity = int(row['quantity'])
         cost_price = row.get('cost_price') or 0
 
@@ -123,8 +134,9 @@ def return_stock(variant, quantity, sale=None, user=None, reason='return', notes
 def set_counted_stock(variant, counted_quantity, user=None, reason='inventory', notes='',
                       movement_type=StockMovement.TYPE_INVENTORY):
     """Inventory count: set stock to the physically counted quantity."""
-    delta = int(counted_quantity) - variant.stock_quantity
-    return change_stock(
-        variant, delta, movement_type,
-        user=user, reason=reason, notes=notes,
-    )
+    with transaction.atomic():
+        variant = ProductVariant.objects.select_for_update().get(pk=variant.pk)
+        delta = int(counted_quantity) - variant.stock_quantity
+        return change_stock(
+            variant, delta, movement_type, user=user, reason=reason, notes=notes,
+        )

@@ -4,7 +4,8 @@ Optional starter data (categories, colours, sizes).
 Categories are pure data - the application never hard-codes them.
 Run:  python manage.py seed_data
 """
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from apps.stores.models import Store
 
 from apps.products.models import Category, Color, Size
 
@@ -31,22 +32,29 @@ SIZES = (
 class Command(BaseCommand):
     help = 'Load starter categories, colours and sizes (idempotent).'
 
+    def add_arguments(self, parser):
+        parser.add_argument('--store', required=True)
+
     def handle(self, *args, **options):
+        try:
+            store = Store.objects.get(code=options['store'].upper())
+        except Store.DoesNotExist:
+            raise CommandError('Store not found.')
         created = {'categories': 0, 'colors': 0, 'sizes': 0}
 
         for name in CATEGORIES:
-            _, was_created = Category.objects.get_or_create(name=name)
+            _, was_created = Category.objects.get_or_create(store=store, name=name)
             created['categories'] += int(was_created)
 
         for name, hex_code in COLORS:
             _, was_created = Color.objects.get_or_create(
-                name=name, defaults={'hex_code': hex_code}
+                store=store, name=name, defaults={'hex_code': hex_code}
             )
             created['colors'] += int(was_created)
 
         for order, (name, size_type) in enumerate(SIZES):
             _, was_created = Size.objects.get_or_create(
-                name=name, size_type=size_type, defaults={'display_order': order}
+                store=store, name=name, size_type=size_type, defaults={'display_order': order}
             )
             created['sizes'] += int(was_created)
 

@@ -5,6 +5,9 @@ import { roleGuard } from './core/guards/role.guard';
 const MANAGER = ['owner', 'manager'];
 
 export const routes: Routes = [
+  { path: 'store/:code/login', loadComponent: () => import('./features/auth/login/login.component').then(m => m.LoginComponent) },
+  { path: 'platform/login', data: { platform: true }, loadComponent: () => import('./features/auth/login/login.component').then(m => m.LoginComponent) },
+  { path: 'platform', canActivate: [roleGuard], data: { roles: ['platform_admin'] }, loadComponent: () => import('./features/platform/platform.component').then(m => m.PlatformComponent) },
   {
     path: 'auth',
     loadComponent: () =>

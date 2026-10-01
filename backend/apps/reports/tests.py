@@ -6,6 +6,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.authentication.models import User
+from apps.stores.models import Store
 from apps.inventory import services as inventory_services
 from apps.products.models import Category, Product, ProductVariant
 from apps.sales.models import Sale, SaleItem
@@ -13,18 +14,19 @@ from apps.sales.models import Sale, SaleItem
 
 class ReportBase(APITestCase):
     def setUp(self):
+        self.store = Store.objects.create(name='Test', code='TEST')
         self.client = APIClient()
         self.owner = self._user('owner', User.ROLE_OWNER)
         self.manager = self._user('manager', User.ROLE_MANAGER)
         self.cashier = self._user('cashier', User.ROLE_CASHIER)
         self.auth(self.owner)
 
-        category = Category.objects.create(name='Futbolka')
-        self.product = Product.objects.create(
+        category = Category.objects.create(store=self.store, name='Futbolka')
+        self.product = Product.objects.create(store=self.store, 
             name='Futbolka Classic', category=category, barcode='5000000000001',
             base_cost_price=Decimal('2000'), base_selling_price=Decimal('2300'),
         )
-        self.variant = ProductVariant.objects.create(
+        self.variant = ProductVariant.objects.create(store=self.store, 
             product=self.product, sku='SKU-R', barcode='5000000000018', stock_quantity=10,
         )
         inventory_services.receive_stock(
@@ -34,7 +36,7 @@ class ReportBase(APITestCase):
         self._make_sale()
 
     def _user(self, username, role):
-        user = User(username=username, role=role, first_name=username.title())
+        user = User(store=self.store, username=username, role=role, first_name=username.title())
         user.set_password('StrongPass!234')
         user.set_pin({'owner': '0000', 'manager': '1111', 'cashier': '2222'}[role])
         user.save()
@@ -44,7 +46,7 @@ class ReportBase(APITestCase):
         self.client.force_authenticate(user=user)
 
     def _make_sale(self):
-        sale = Sale.objects.create(
+        sale = Sale.objects.create(store=self.store, 
             number=1, cashier=self.owner, payment_method=Sale.PAYMENT_CASH,
             subtotal=Decimal('4600'), total_amount=Decimal('4600'),
             cash_amount=Decimal('4600'), received_amount=Decimal('5000'),

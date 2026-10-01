@@ -26,6 +26,8 @@ def resolve_period(params):
     if period == PERIOD_YESTERDAY:
         yesterday = today - timedelta(days=1)
         return yesterday, yesterday
+    if period == 'days30':
+        return today - timedelta(days=29), today
     if period == PERIOD_WEEK:
         return today - timedelta(days=6), today
     if period == PERIOD_MONTH:
@@ -36,6 +38,11 @@ def resolve_period(params):
     start = parse_date(params.get('date_from') or '') 
     end = parse_date(params.get('date_to') or '')
     if period == PERIOD_CUSTOM or start or end:
+        from rest_framework.exceptions import ValidationError
+        if params.get('date_from') and not start or params.get('date_to') and not end:
+            raise ValidationError('Invalid date range.')
+        if start and end and (start > end or (end-start).days > 3660):
+            raise ValidationError('Invalid or excessively long date range.')
         return start, end
     return None, None
 

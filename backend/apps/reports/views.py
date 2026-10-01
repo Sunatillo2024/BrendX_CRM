@@ -12,6 +12,7 @@ from apps.products.models import ProductVariant
 from apps.sales import services as sales_services
 from apps.sales.models import SaleItem
 
+from apps.common.tenancy import active_store
 from .exporters import CSV_MIME, XLSX_MIME, rows_to_csv, rows_to_xlsx
 
 HEADERS = {
@@ -99,7 +100,7 @@ class SalesExportView(APIView):
                  h['payment'], h['status']]]
 
         items = SaleItem.objects.filter(
-            sale__in=sales_services.sales_in_range(start, end)
+            sale__in=sales_services.sales_in_range(start, end, store=active_store(request.user))
         ).select_related('sale', 'sale__cashier', 'sale__customer').order_by('-sale__created_at')
 
         for item in items:
@@ -132,7 +133,7 @@ class StockExportView(APIView):
             header += [h['cost'], h['value']]
         rows = [header]
 
-        variants = ProductVariant.objects.filter(is_active=True).select_related(
+        variants = ProductVariant.objects.filter(store=active_store(request.user), is_active=True).select_related(
             'product', 'product__category', 'color', 'size'
         ).order_by('product__name')
         for v in variants:
@@ -148,8 +149,8 @@ class StockExportView(APIView):
 
 
 class ReceiptsExportView(APIView):
-    """Goods receipts (Поступления)."""
-    permission_classes = [IsOwnerOrManager]
+    """Goods receipts with purchase costs — owner only."""
+    permission_classes = [IsOwner]
 
     def get(self, request):
         lang = _lang(request)
@@ -159,7 +160,7 @@ class ReceiptsExportView(APIView):
         rows = [[h['receipt_no'], h['date'], h['vendor'], h['product'], h['color'],
                  h['size'], h['qty'], h['cost'], h['total']]]
 
-        items = StockReceiptItem.objects.select_related(
+        items = StockReceiptItem.objects.filter(receipt__store=active_store(request.user)).select_related(
             'receipt', 'receipt__vendor', 'product_variant__product',
             'product_variant__color', 'product_variant__size'
         )
@@ -189,7 +190,7 @@ class FinanceExportView(APIView):
         start, end = resolve_period(request.query_params)
         entry_type = request.query_params.get('type')
 
-        entries = FinanceEntry.objects.select_related('created_by')
+        entries = FinanceEntry.objects.filter(store=active_store(request.user)).select_related('created_by')
         if entry_type in (FinanceEntry.TYPE_INCOME, FinanceEntry.TYPE_EXPENSE):
             entries = entries.filter(entry_type=entry_type)
         if start:
@@ -220,7 +221,7 @@ class FinancialSummaryExportView(APIView):
         lang = _lang(request)
         h = HEADERS[lang]
         start, end = resolve_period(request.query_params)
-        stats = sales_services.financial_stats(start, end)
+        stats = sales_services.financial_stats(start, end, store=active_store(request.user))
 
         labels = {
             'uz': ['Savdo soni', 'Sotilgan dona', 'Tushum', 'Qaytarishlar',
@@ -251,10 +252,10 @@ class ReportSummaryView(APIView):
         start, end = resolve_period(request.query_params)
         payload = {
             'period': {'start': start, 'end': end},
-            'operational': sales_services.operational_stats(start, end),
-            'top_products': sales_services.top_products(start, end, 10),
-            'chart': sales_services.sales_by_day(start, end) if start and end else [],
+            'operational': sales_services.operational_stats(start, end, store=active_store(request.user)),
+            'top_products': sales_services.top_products(start, end, 10, store=active_store(request.user)),
+            'chart': sales_services.sales_by_day(start, end, store=active_store(request.user)) if start and end else [],
         }
         if request.user.can_view_financials:
-            payload['financial'] = sales_services.financial_stats(start, end)
+            payload['financial'] = sales_services.financial_stats(start, end, store=active_store(request.user))
         return Response(payload)

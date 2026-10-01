@@ -1,9 +1,10 @@
 """Vendors App Models - Vendor management with financial tracking"""
 from django.db import models
+from apps.stores.models import StoreOwned
 from django.utils.translation import gettext_lazy as _
 
 
-class Vendor(models.Model):
+class Vendor(StoreOwned):
     """Supplier/vendor with financial balance tracking."""
     name = models.CharField(max_length=200)
     phone = models.CharField(max_length=20)

@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.audit.models import AuditLog
+from apps.stores.models import Store
 
 from .models import PinAttempt, User
 
@@ -12,7 +13,8 @@ from .models import PinAttempt, User
 class UserFactoryMixin:
     def make_user(self, username='cashier1', role=User.ROLE_CASHIER, pin='1234',
                   password='StrongPass!234'):
-        user = User(username=username, role=role, first_name=username.title())
+        store, _ = Store.objects.get_or_create(code='TEST', defaults={'name': 'Test'})
+        user = User(store=store if role != 'platform_admin' else None, username=username, role=role, first_name=username.title())
         user.set_password(password)
         if pin:
             user.set_pin(pin)
@@ -53,8 +55,8 @@ class PinStorageTests(UserFactoryMixin, TestCase):
     def test_pin_never_appears_in_audit_log(self):
         user = self.make_user(pin='4321')
         client = APIClient()
-        client.post(reverse('pin-login'), {'pin': '9999'}, format='json')
-        client.post(reverse('pin-login'), {'pin': '4321'}, format='json')
+        client.post(reverse('pin-login'), {'store_code': 'TEST', 'pin': '9999'}, format='json')
+        client.post(reverse('pin-login'), {'store_code': 'TEST', 'pin': '4321'}, format='json')
         for entry in AuditLog.objects.all():
             self.assertNotIn('4321', str(entry.details))
             self.assertNotIn('9999', str(entry.details))
@@ -67,24 +69,24 @@ class PinLoginTests(UserFactoryMixin, TestCase):
         self.user = self.make_user(pin='0808')
 
     def test_login_with_correct_pin(self):
-        response = self.client.post(self.url, {'pin': '0808'}, format='json')
+        response = self.client.post(self.url, {'store_code': 'TEST', 'pin': '0808'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('access', response.data)
         self.assertEqual(response.data['user']['role'], User.ROLE_CASHIER)
 
     def test_wrong_pin_is_rejected(self):
-        response = self.client.post(self.url, {'pin': '1111'}, format='json')
+        response = self.client.post(self.url, {'store_code': 'TEST', 'pin': '1111'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertNotIn('access', response.data)
 
     def test_inactive_employee_cannot_log_in(self):
         self.user.is_active = False
         self.user.save()
-        response = self.client.post(self.url, {'pin': '0808'}, format='json')
+        response = self.client.post(self.url, {'store_code': 'TEST', 'pin': '0808'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_successful_login_is_audited(self):
-        self.client.post(self.url, {'pin': '0808'}, format='json')
+        self.client.post(self.url, {'store_code': 'TEST', 'pin': '0808'}, format='json')
         self.assertTrue(
             AuditLog.objects.filter(action=AuditLog.ACTION_LOGIN, username=self.user.username).exists()
         )
@@ -101,16 +103,16 @@ class PinThrottleTests(UserFactoryMixin, TestCase):
     def test_lockout_after_repeated_failures(self):
         from django.conf import settings
         for _ in range(settings.PIN_MAX_ATTEMPTS):
-            response = self.client.post(self.url, {'pin': '0000'}, format='json')
+            response = self.client.post(self.url, {'store_code': 'TEST', 'pin': '0000'}, format='json')
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
         # The correct PIN is now refused as well - the IP is locked.
-        locked = self.client.post(self.url, {'pin': '0808'}, format='json')
+        locked = self.client.post(self.url, {'store_code': 'TEST', 'pin': '0808'}, format='json')
         self.assertEqual(locked.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
         self.assertIn('retry_after', locked.data)
 
     def test_attempts_are_recorded(self):
-        self.client.post(self.url, {'pin': '0000'}, format='json')
+        self.client.post(self.url, {'store_code': 'TEST', 'pin': '0000'}, format='json')
         self.assertEqual(PinAttempt.objects.filter(was_success=False).count(), 1)
 
 
@@ -226,7 +228,7 @@ class AdminPinLoginTests(UserFactoryMixin, TestCase):
     """The Django admin is reached with a PIN, not a username/password form."""
 
     def setUp(self):
-        self.owner = self.make_user('owner-admin', User.ROLE_OWNER, pin='0808')
+        self.owner = self.make_user('owner-admin', User.ROLE_PLATFORM_ADMIN, pin='0808')
         self.owner.is_staff = True
         self.owner.is_superuser = True
         self.owner.language = 'ru'
@@ -239,7 +241,7 @@ class AdminPinLoginTests(UserFactoryMixin, TestCase):
         self.assertNotContains(response, 'name="password"')
 
     def test_pin_logs_staff_into_admin(self):
-        response = self.client.post('/admin/login/', {'pin': '0808'}, follow=False)
+        response = self.client.post('/admin/login/', {'store_code': 'TEST', 'pin': '0808'}, follow=False)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, reverse('admin:index'))
         # Preferred language is applied to the admin.
@@ -247,12 +249,12 @@ class AdminPinLoginTests(UserFactoryMixin, TestCase):
         self.assertEqual(self.client.get('/admin/').status_code, 200)
 
     def test_wrong_pin_is_rejected(self):
-        response = self.client.post('/admin/login/', {'pin': '9999'})
+        response = self.client.post('/admin/login/', {'store_code': 'TEST', 'pin': '9999'})
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('_auth_user_id', self.client.session)
 
     def test_non_staff_employee_cannot_use_admin_pin(self):
         self.make_user('cashier-admin-pin', User.ROLE_CASHIER, pin='5555')
-        response = self.client.post('/admin/login/', {'pin': '5555'})
+        response = self.client.post('/admin/login/', {'store_code': 'TEST', 'pin': '5555'})
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('_auth_user_id', self.client.session)

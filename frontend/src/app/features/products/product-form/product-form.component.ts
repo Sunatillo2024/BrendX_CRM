@@ -39,12 +39,15 @@ import { ToastService } from '../../../core/ui/toast.service';
                 <option [ngValue]="c.id">{{ c.name }}</option>
               }
             </select>
+            <button class="btn sm" (click)="categoryOpen = !categoryOpen">+ {{ label('Yangi kategoriya','Новая категория') }}</button>
+            @if (categoryOpen) {<div class="btn-row"><input class="input" [(ngModel)]="newCategory" name="newCategory"><button class="btn sm" (click)="createCategory()">{{ label('Yaratish','Создать') }}</button></div>}
           </div>
 
           <div class="field">
             <label class="field-label">{{ 'products.barcode' | t }}</label>
             <input class="input" [(ngModel)]="model.barcode" name="barcode"
-                   [placeholder]="'common.optional' | t">
+                   [placeholder]="'common.optional' | t" (keydown.enter)="$event.preventDefault()">
+            <button class="btn sm" (click)="model.barcode = generateCode()">{{ label('Generatsiya','Сгенерировать') }}</button>
           </div>
 
           <div class="field">
@@ -82,6 +85,17 @@ import { ToastService } from '../../../core/ui/toast.service';
         </div>
       </div>
 
+      <div class="card mt-16"><div class="btn-row">
+        <button class="btn" [class.primary]="simpleMode" (click)="simpleMode=true">{{ label('Oddiy mahsulot','Простой товар') }}</button>
+        <button class="btn" [class.primary]="!simpleMode" (click)="simpleMode=false">{{ label('Rang × o‘lcham','Цвет × размер') }}</button>
+        @if (simpleMode) {<label>{{ 'products.stock' | t }} <input class="input" type="number" min="0" [(ngModel)]="simpleStock"></label>}
+        @else {
+          <div class="field"><label>{{ 'common.color' | t }}</label>@for(c of colors();track c.id){<label><input type="checkbox" [checked]="selectedColors.includes(c.id)" (change)="toggleAttribute(selectedColors,c.id)">{{ c.name }}</label>}</div>
+          <div class="field"><label>{{ 'common.size' | t }}</label>@for(s of sizes();track s.id){<label><input type="checkbox" [checked]="selectedSizes.includes(s.id)" (change)="toggleAttribute(selectedSizes,s.id)">{{ s.name }}</label>}</div>
+          <button class="btn" (click)="buildMatrix()">{{ label('Kombinatsiyalar yaratish','Создать комбинации') }}</button>
+          <div class="table-wrap"><table class="data"><thead><tr><th>{{ 'common.color' | t }}</th>@for(id of selectedSizes;track id){<th>{{ sizeName(id) }}</th>}</tr></thead><tbody>@for(c of selectedColors;track c){<tr><td>{{ colorName(c) }}</td>@for(s of selectedSizes;track s){<td><input class="input" type="number" min="0" [ngModel]="matrixStock(c,s)" (ngModelChange)="setMatrixStock(c,s,$event)"></td>}</tr>}</tbody></table></div>
+        }
+      </div></div>
       <!-- Variants -->
       <div class="card" style="margin-top:16px">
         <div class="card-title-row">
@@ -209,6 +223,21 @@ export class ProductFormComponent implements OnInit {
   saving = false;
   productId: number | null = null;
 
+  simpleMode = true;
+  simpleStock = 0;
+  selectedColors: number[] = [];
+  selectedSizes: number[] = [];
+  categoryOpen = false;
+  newCategory = '';
+  label(uz: string, ru: string) { return this.i18n.lang() === 'ru' ? ru : uz; }
+  generateCode() { return '2' + Array.from(crypto.getRandomValues(new Uint8Array(12)), n => String(n % 10)).join(''); }
+  toggleAttribute(list: number[], id: number) { const at=list.indexOf(id);if(at<0)list.push(id);else list.splice(at,1); }
+  colorName(id: number) { return this.colors().find(c=>c.id===id)?.name || ''; }
+  sizeName(id: number) { return this.sizes().find(s=>s.id===id)?.name || ''; }
+  buildMatrix() { const previous=this.variants;this.variants=this.selectedColors.flatMap(color=>this.selectedSizes.map(size=>previous.find(v=>v.color===color&&v.size===size) || {color,size,barcode:'',stock_quantity:0,selling_price:null,cost_price:null,is_active:true})); }
+  matrixStock(c: number,s: number) { return this.variants.find(v=>v.color===c&&v.size===s)?.stock_quantity || 0; }
+  setMatrixStock(c: number,s: number,n: number) { let v=this.variants.find(v=>v.color===c&&v.size===s);if(!v){v={color:c,size:s,stock_quantity:0};this.variants.push(v);}v.stock_quantity=n; }
+  createCategory() { const name=this.newCategory.trim();if(!name)return;this.api.createCategory({name}).subscribe({next:c=>{this.categories.update(cs=>[...cs,c]);this.model.category=c.id;this.categoryOpen=false;this.newCategory='';},error:()=>this.toast.error(this.i18n.t('common.error'))}); }
   newColor = '';
   newSize = '';
   newSizeType = 'letter';
@@ -231,6 +260,8 @@ export class ProductFormComponent implements OnInit {
     this.loadColors();
     this.loadSizes();
 
+    const duplicate = this.route.snapshot.queryParamMap.get('duplicate');
+    if (duplicate) { this.api.getProduct(Number(duplicate)).subscribe(product=>{this.fill(product);this.model.name+=' — '+this.label('nusxa','копия');this.model.barcode='';this.variants=this.variants.map(v=>({...v,id:undefined,barcode:'',stock_quantity:0}));this.simpleStock=0;});return; }
     const id = this.route.snapshot.paramMap.get('id');
     if (id) {
       this.isEdit = true;
@@ -250,6 +281,10 @@ export class ProductFormComponent implements OnInit {
   }
 
   fill(product: Product) {
+    this.simpleMode = product.variants.length <= 1 && product.variants.every(v=>!v.color&&!v.size);
+    this.simpleStock = product.variants[0]?.stock_quantity || 0;
+    this.selectedColors = [...new Set(product.variants.map(v=>v.color).filter((id): id is number=>id!==null))];
+    this.selectedSizes = [...new Set(product.variants.map(v=>v.size).filter((id): id is number=>id!==null))];
     this.model = {
       name: product.name,
       category: product.category,
@@ -308,6 +343,9 @@ export class ProductFormComponent implements OnInit {
 
   save() {
     if (!this.model.name || !this.model.base_selling_price) return;
+    if (this.simpleMode) { this.variants=[{id:this.isEdit ? this.variants[0]?.id : undefined,color:null,size:null,stock_quantity:this.simpleStock,barcode:this.variants[0]?.barcode || ''}]; }
+    if (!this.simpleMode && !this.variants.length) this.buildMatrix();
+    if (!this.variants.length) return;
     this.saving = true;
 
     const payload: any = {

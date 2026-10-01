@@ -12,6 +12,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.audit.models import AuditLog
 from apps.audit.services import log_action
 
+from apps.common.tenancy import TenantViewMixin, active_store
 from .models import PinAttempt, User
 from .permissions import IsOwner, IsOwnerOrManager
 from .serializers import (
@@ -67,7 +68,15 @@ class PinLoginView(generics.GenericAPIView):
         pin = str(serializer.validated_data['pin'])
 
         user = None
-        for candidate in User.objects.filter(is_active=True).exclude(pin_hash=''):
+        candidates = User.objects.filter(is_active=True).exclude(pin_hash='')
+        if serializer.validated_data.get('platform'):
+            candidates = candidates.filter(role='platform_admin', store__isnull=True)
+        else:
+            code = serializer.validated_data.get('store_code', '').strip().upper()
+            if not code:
+                return Response({'detail': 'Store code required.'}, status=400)
+            candidates = candidates.filter(store__code=code, store__is_active=True).exclude(role='platform_admin')
+        for candidate in candidates:
             if candidate.check_pin(pin):
                 user = candidate
                 break
@@ -119,7 +128,16 @@ class LogoutView(generics.GenericAPIView):
         return Response({'detail': 'Successfully logged out.'}, status=status.HTTP_200_OK)
 
 
-class UserViewSet(viewsets.ModelViewSet):
+class UserViewSet(TenantViewMixin, viewsets.ModelViewSet):
+    def get_queryset(self):
+        return super().get_queryset().exclude(role='platform_admin')
+
+    def get_serializer(self, *args, **kwargs):
+        # Profile actions also support a global platform account.
+        if self.action in ('me', 'change_password', 'change_pin'):
+            return viewsets.ModelViewSet.get_serializer(self, *args, **kwargs)
+        return super().get_serializer(*args, **kwargs)
+
     """Employee management. Only the owner can create/edit/deactivate employees."""
     queryset = User.objects.all().order_by('first_name', 'username')
     search_fields = ['username', 'email', 'first_name', 'last_name', 'phone']
@@ -142,12 +160,15 @@ class UserViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
-        user = serializer.save()
+        user = serializer.save(store=active_store(self.request.user), is_staff=False, is_superuser=False)
         log_action(AuditLog.ACTION_USER_CREATED, user=self.request.user, entity='user',
                    entity_id=user.pk, details={'username': user.username, 'role': user.role})
 
     def perform_update(self, serializer):
         target = self.get_object()
+        if target.role == 'owner':
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Use the platform panel to manage the owner.')
         before = {'role': target.role, 'is_active': target.is_active}
         new_pin = bool(serializer.validated_data.get('pin'))
         user = serializer.save()
@@ -200,7 +221,7 @@ class UserViewSet(viewsets.ModelViewSet):
             return Response({'current_pin': 'Incorrect PIN.'}, status=status.HTTP_400_BAD_REQUEST)
 
         new_pin = serializer.validated_data['pin']
-        if pin_is_taken(new_pin, exclude_user_id=user.pk):
+        if pin_is_taken(new_pin, exclude_user_id=user.pk, store=user.store):
             return Response({'pin': 'This PIN is already used by another employee.'},
                             status=status.HTTP_400_BAD_REQUEST)
         user.set_pin(new_pin)
@@ -217,7 +238,7 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         new_pin = serializer.validated_data['pin']
-        if pin_is_taken(new_pin, exclude_user_id=user.pk):
+        if pin_is_taken(new_pin, exclude_user_id=user.pk, store=user.store):
             return Response({'pin': 'This PIN is already used by another employee.'},
                             status=status.HTTP_400_BAD_REQUEST)
         user.set_pin(new_pin)

@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.authentication.models import User
+from apps.stores.models import Store
 from apps.products.models import Category, Product, ProductVariant
 from apps.sales.models import Sale, SaleItem
 
@@ -13,6 +14,7 @@ from .models import FinanceEntry
 
 class FinanceBase(APITestCase):
     def setUp(self):
+        self.store = Store.objects.create(name='Test', code='TEST')
         self.client = APIClient()
         self.owner = self._user('owner', User.ROLE_OWNER)
         self.manager = self._user('manager', User.ROLE_MANAGER)
@@ -20,7 +22,7 @@ class FinanceBase(APITestCase):
         self.auth(self.owner)
 
     def _user(self, username, role):
-        user = User(username=username, role=role, first_name=username.title())
+        user = User(store=self.store, username=username, role=role, first_name=username.title())
         user.set_password('StrongPass!234')
         user.set_pin({'owner': '0000', 'manager': '1111', 'cashier': '2222'}[role])
         user.save()
@@ -30,15 +32,15 @@ class FinanceBase(APITestCase):
         self.client.force_authenticate(user=user)
 
     def _make_sale(self, total='100000', cost='60000'):
-        category = Category.objects.create(name='Futbolka')
-        product = Product.objects.create(
+        category = Category.objects.create(store=self.store, name='Futbolka')
+        product = Product.objects.create(store=self.store, 
             name='P', category=category, barcode='4000000000001',
             base_cost_price=Decimal(cost), base_selling_price=Decimal(total),
         )
-        variant = ProductVariant.objects.create(
+        variant = ProductVariant.objects.create(store=self.store, 
             product=product, sku='SKU-P', barcode='4000000000018', stock_quantity=5,
         )
-        sale = Sale.objects.create(
+        sale = Sale.objects.create(store=self.store, 
             number=1, cashier=self.owner, payment_method=Sale.PAYMENT_CASH,
             subtotal=Decimal(total), total_amount=Decimal(total),
             cash_amount=Decimal(total), received_amount=Decimal(total),

@@ -1,43 +1,52 @@
 #!/bin/sh
 set -e
 
-echo "==> Waiting for MySQL at ${DB_HOST:-db}:${DB_PORT:-3306} ..."
+echo "==> Waiting for configured database ..."
 python - <<'PY'
-import sys, time
-import MySQLdb
-from decouple import config
+import os
+import sys
+import time
 
-host = config('DB_HOST', default='db')
-port = int(config('DB_PORT', default=3306))
-user = config('DB_USER', default='brandx')
-password = config('DB_PASSWORD', default='brandx')
-name = config('DB_NAME', default='brandx')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'brandx_api.settings')
+import django
+django.setup()
+from django.db import connection
 
 for attempt in range(1, 61):
     try:
-        MySQLdb.connect(host=host, port=port, user=user, passwd=password, db=name)
-        print(f'MySQL is ready (attempt {attempt}).')
-        sys.exit(0)
-    except Exception as exc:  # noqa: BLE001
-        print(f'  ... not ready ({exc})')
+        connection.ensure_connection()
+        print(f'{connection.vendor} is ready (attempt {attempt}).')
+        connection.close()
+        break
+    except Exception:
+        # Do not log connection exceptions containing sensitive configuration.
+        connection.close()
+        print(f'  ... database not ready (attempt {attempt})')
         time.sleep(2)
-
-print('MySQL did not become ready in time.', file=sys.stderr)
-sys.exit(1)
+else:
+    print('Database did not become ready in time.', file=sys.stderr)
+    sys.exit(1)
 PY
 
 echo "==> Running migrations ..."
 python manage.py migrate --noinput
 
-echo "==> Ensuring default admin user exists ..."
-python manage.py create_admin \
-  --username "${DJANGO_ADMIN_USERNAME:-admin}" \
-  --password "${DJANGO_ADMIN_PASSWORD:-1}" \
-  --pin "${DJANGO_ADMIN_PIN:-0808}"
+# A transfer target must stay empty until the validated import completes.
+# Explicit bootstrap only; do not silently reset credentials on every restart.
+if [ "${BOOTSTRAP_ADMIN:-false}" = "true" ]; then
+  : "${DJANGO_ADMIN_USERNAME:?Set DJANGO_ADMIN_USERNAME}"
+  : "${DJANGO_ADMIN_PASSWORD:?Set DJANGO_ADMIN_PASSWORD}"
+  : "${DJANGO_ADMIN_PIN:?Set DJANGO_ADMIN_PIN}"
+  python manage.py create_admin \
+    --username "$DJANGO_ADMIN_USERNAME" \
+    --password "$DJANGO_ADMIN_PASSWORD" \
+    --pin "$DJANGO_ADMIN_PIN"
+fi
 
-if [ "${SEED_DATA:-true}" = "true" ]; then
+if [ "${SEED_DATA:-false}" = "true" ]; then
   echo "==> Seeding starter categories / colours / sizes ..."
-  python manage.py seed_data
+  : "${SEED_STORE_CODE:?Set SEED_STORE_CODE}"
+  python manage.py seed_data --store "$SEED_STORE_CODE"
 fi
 
 echo "==> Collecting static files ..."

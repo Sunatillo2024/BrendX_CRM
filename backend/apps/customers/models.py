@@ -1,9 +1,10 @@
 """Customers App Models - simple customer registry (no credit / installments)"""
 from django.db import models
+from apps.stores.models import StoreOwned
 from django.utils.translation import gettext_lazy as _
 
 
-class Customer(models.Model):
+class Customer(StoreOwned):
     """
     Simple customer record.
 

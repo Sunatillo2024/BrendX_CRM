@@ -10,11 +10,12 @@ from apps.authentication.permissions import IsOwner, IsOwnerOrManager
 from apps.common.filters import DateRangeFilterMixin, resolve_period
 from apps.sales import services as sales_services
 
+from apps.common.tenancy import TenantViewMixin, active_store
 from .models import FinanceEntry
 from .serializers import FinanceEntrySerializer
 
 
-class FinanceEntryViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
+class FinanceEntryViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
     """
     Income / expense book.
 
@@ -40,7 +41,7 @@ class FinanceEntryViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         return self.filter_by_period(super().get_queryset())
 
     def perform_create(self, serializer):
-        entry = serializer.save(created_by=self.request.user)
+        entry = serializer.save(created_by=self.request.user, store=active_store(self.request.user))
         log_action(
             AuditLog.ACTION_INCOME_CREATED if entry.entry_type == FinanceEntry.TYPE_INCOME
             else AuditLog.ACTION_EXPENSE_CREATED,
@@ -73,7 +74,7 @@ class FinanceEntryViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         the profit breakdown.
         """
         start, end = resolve_period(request.query_params)
-        entries = self.filter_by_period(FinanceEntry.objects.all())
+        entries = self.filter_by_period(FinanceEntry.objects.filter(store=active_store(request.user)))
         totals = entries.aggregate(
             income=Sum('amount', filter=Q(entry_type=FinanceEntry.TYPE_INCOME)),
             expense=Sum('amount', filter=Q(entry_type=FinanceEntry.TYPE_EXPENSE)),
@@ -84,5 +85,5 @@ class FinanceEntryViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
             'expense': totals['expense'] or 0,
         }
         if request.user.can_view_financials:
-            payload['financial'] = sales_services.financial_stats(start, end)
+            payload['financial'] = sales_services.financial_stats(start, end, store=active_store(request.user))
         return Response(payload)

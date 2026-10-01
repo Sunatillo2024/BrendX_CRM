@@ -1,10 +1,11 @@
 """Finance Models - Income / Expense entries (Кирим / Чиқим)"""
 from django.db import models
+from apps.stores.models import StoreOwned
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
-class FinanceEntry(models.Model):
+class FinanceEntry(StoreOwned):
     """
     A single income or expense entry.
 
@@ -35,7 +36,7 @@ class FinanceEntry(models.Model):
         ordering = ['-entry_date', '-created_at']
         verbose_name = _('Income / Expense')
         verbose_name_plural = _('Income / Expenses')
-        indexes = [models.Index(fields=['entry_type', '-entry_date'])]
+        indexes = [models.Index(fields=['store', 'entry_type', '-entry_date'])]
 
     def __str__(self):
         return f'{self.get_entry_type_display()} {self.amount}'

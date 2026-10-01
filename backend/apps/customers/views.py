@@ -3,11 +3,12 @@ from rest_framework import viewsets
 
 from apps.authentication.permissions import IsAuthenticatedWithRole, IsOwnerOrManager
 
+from apps.common.tenancy import TenantViewMixin
 from .models import Customer
 from .serializers import CustomerListSerializer, CustomerSerializer
 
 
-class CustomerViewSet(viewsets.ModelViewSet):
+class CustomerViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = Customer.objects.order_by('name')
     search_fields = ['name', 'phone', 'email']
     filterset_fields = ['is_active']

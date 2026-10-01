@@ -33,6 +33,7 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS = [
+    'apps.stores.apps.StoresConfig',
     'apps.audit.apps.AuditConfig',
     'apps.authentication.apps.AuthenticationConfig',
     'apps.products.apps.ProductsConfig',
@@ -80,9 +81,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'brandx_api.wsgi.application'
 
-# Database - MySQL by default; SQLite is supported for local test runs
-# (set DB_ENGINE=django.db.backends.sqlite3 to avoid needing a MySQL server).
-DB_ENGINE = config('DB_ENGINE', default='django.db.backends.mysql')
+# PostgreSQL is primary; MySQL is retained only for migration-source access.
+# SQLite remains useful for fast unit tests, not concurrency verification.
+DB_ENGINE = config('DB_ENGINE', default='django.db.backends.postgresql')
 if DB_ENGINE == 'django.db.backends.sqlite3':
     DATABASES = {
         'default': {
@@ -95,14 +96,14 @@ else:
         'default': {
             'ENGINE': DB_ENGINE,
             'NAME': config('DB_NAME', default='brandx'),
-            'USER': config('DB_USER', default='root'),
-            'PASSWORD': config('DB_PASSWORD', default='159632'),
+            'USER': config('DB_USER', default=''),
+            'PASSWORD': config('DB_PASSWORD', default=''),
             'HOST': config('DB_HOST', default='localhost'),
-            'PORT': config('DB_PORT', default='3306'),
-            'OPTIONS': {
+            'PORT': config('DB_PORT', default='3306' if DB_ENGINE == 'django.db.backends.mysql' else '5432'),
+            'OPTIONS': ({
                 'charset': 'utf8mb4',
                 'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
-            },
+            } if DB_ENGINE == 'django.db.backends.mysql' else {}),
         }
     }
 
@@ -144,10 +145,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Django REST Framework Configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.authentication.backends.StoreJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
+        'apps.authentication.permissions.IsAuthenticatedWithRole',
     ),
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',

@@ -47,7 +47,7 @@ class PinAdminLoginView(View):
         return render(request, self.template_name, context)
 
     def get(self, request):
-        if request.user.is_authenticated and request.user.is_staff:
+        if request.user.is_authenticated and request.user.is_staff and request.user.role == 'platform_admin':
             return HttpResponseRedirect(_safe_next(request, reverse('admin:index')))
         return self._render(request)
 
@@ -67,7 +67,7 @@ class PinAdminLoginView(View):
 
         user = None
         for candidate in User.objects.filter(
-            is_active=True, is_staff=True
+            is_active=True, is_staff=True, role='platform_admin', store__isnull=True
         ).exclude(pin_hash=''):
             if candidate.check_pin(pin):
                 user = candidate

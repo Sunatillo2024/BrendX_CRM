@@ -1,5 +1,6 @@
 import { Pipe, PipeTransform, inject } from '@angular/core';
 import { environment } from '../../../environments/environment';
+import { AuthService } from '../services/auth.service';
 import { TranslationService } from './translation.service';
 
 /** Usage: {{ 'menu.pos' | t }}  /  {{ 'payment' | t: row.payment_method }} */
@@ -16,12 +17,13 @@ export class TranslatePipe implements PipeTransform {
 /** Money with a thousand separator, e.g. 4 600 сом */
 @Pipe({ name: 'money', standalone: true, pure: false })
 export class MoneyPipe implements PipeTransform {
+  private auth = inject(AuthService);
   transform(value: number | string | null | undefined, showCurrency = true): string {
     const amount = Number(value ?? 0);
     const formatted = new Intl.NumberFormat('ru-RU', {
       minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     }).format(Number.isFinite(amount) ? amount : 0);
-    return showCurrency ? `${formatted} ${environment.currency}` : formatted;
+    return showCurrency ? `${formatted} ${this.auth.currentUser()?.store_detail?.currency_symbol || environment.currency}` : formatted;
   }
 }

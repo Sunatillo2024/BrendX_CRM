@@ -13,6 +13,7 @@ from apps.authentication.permissions import IsOwner, IsOwnerOrManager
 from apps.common.filters import DateRangeFilterMixin
 from apps.products.models import ProductVariant
 
+from apps.common.tenancy import TenantViewMixin, active_store
 from . import services
 from .models import StockMovement, StockReceipt
 from .serializers import (
@@ -21,7 +22,7 @@ from .serializers import (
 )
 
 
-class StockReceiptViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
+class StockReceiptViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
     """
     Goods receipts ("Поступление").
 
@@ -43,7 +44,7 @@ class StockReceiptViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         return self.filter_by_period(super().get_queryset())
 
     def create(self, request, *args, **kwargs):
-        serializer = StockReceiptWriteSerializer(data=request.data)
+        serializer = StockReceiptWriteSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -58,10 +59,10 @@ class StockReceiptViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
                    entity_id=receipt.pk,
                    details={'number': receipt.number, 'lines': len(data['items']),
                             'total_quantity': receipt.total_quantity})
-        return Response(StockReceiptSerializer(receipt).data, status=status.HTTP_201_CREATED)
+        return Response(StockReceiptSerializer(receipt, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
-class StockMovementViewSet(DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
+class StockMovementViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
     """Stock movement history (read-only) + manual adjust / inventory count."""
     queryset = StockMovement.objects.select_related(
         'product_variant__product', 'product_variant__color', 'product_variant__size',
@@ -83,7 +84,7 @@ class StockMovementViewSet(DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
         Manual stock adjustment or physical inventory count.
         Always produces a StockMovement (audit trail).
         """
-        serializer = StockAdjustWriteSerializer(data=request.data)
+        serializer = StockAdjustWriteSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         variant = data['product_variant']
@@ -109,13 +110,13 @@ class StockMovementViewSet(DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
                    details={'variant': str(variant), 'before': movement.quantity_before,
                             'change': movement.quantity_change, 'after': movement.quantity_after,
                             'mode': data.get('mode')})
-        return Response(StockMovementSerializer(movement).data, status=status.HTTP_201_CREATED)
+        return Response(StockMovementSerializer(movement, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['get'])
     def low_stock(self, request):
         """Variants at or below their own low-stock threshold."""
         variants = ProductVariant.objects.filter(
-            is_active=True, product__is_active=True,
+            store=active_store(request.user), is_active=True, product__is_active=True,
             stock_quantity__lte=F('low_stock_threshold'),
         ).select_related('product', 'color', 'size').order_by('stock_quantity')
         from apps.products.serializers import VariantSearchSerializer
@@ -128,7 +129,7 @@ class InventoryValuationView(APIView):
 
     def get(self, request):
         variants = ProductVariant.objects.filter(
-            is_active=True, product__is_active=True
+            store=active_store(request.user), is_active=True, product__is_active=True
         ).select_related('product')
 
         total_cost = Decimal('0')

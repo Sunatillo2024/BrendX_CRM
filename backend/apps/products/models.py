@@ -3,6 +3,7 @@ import os
 import uuid
 
 from django.db import models
+from apps.stores.models import StoreOwned
 from django.utils.translation import gettext_lazy as _
 
 
@@ -16,14 +17,14 @@ def category_image_path(instance, filename):
     return f'categories/{uuid.uuid4()}{ext}'
 
 
-class Category(models.Model):
+class Category(StoreOwned):
     """
     Product category (flat).
 
     Categories are managed by the
     owner/manager in the UI - they are never hard-coded in the application.
     """
-    name = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     image = models.ImageField(upload_to=category_image_path, null=True, blank=True)
     is_active = models.BooleanField(default=True)
@@ -34,14 +35,15 @@ class Category(models.Model):
         verbose_name = _('Category')
         verbose_name_plural = _('Categories')
         ordering = ['name']
+        constraints = [models.UniqueConstraint(fields=['store', 'name'], name='%(class)s_store_name')]
 
     def __str__(self):
         return self.name
 
 
-class Color(models.Model):
+class Color(StoreOwned):
     """Colour options for product variants."""
-    name = models.CharField(max_length=50, unique=True)
+    name = models.CharField(max_length=50)
     hex_code = models.CharField(max_length=7, default='#000000')
 
     class Meta:
@@ -49,12 +51,13 @@ class Color(models.Model):
         verbose_name = _('Color')
         verbose_name_plural = _('Colors')
         ordering = ['name']
+        constraints = [models.UniqueConstraint(fields=['store', 'name'], name='%(class)s_store_name')]
 
     def __str__(self):
         return self.name
 
 
-class Size(models.Model):
+class Size(StoreOwned):
     """Size options for product variants (S/M/L, numeric, universal)."""
     SIZE_LETTER = 'letter'
     SIZE_NUMERIC = 'numeric'
@@ -77,13 +80,13 @@ class Size(models.Model):
         verbose_name = _('Size')
         verbose_name_plural = _('Sizes')
         ordering = ['size_type', 'display_order']
-        unique_together = [['name', 'size_type']]
+        unique_together = [['store', 'name', 'size_type']]
 
     def __str__(self):
         return self.name
 
 
-class Product(models.Model):
+class Product(StoreOwned):
     """
     Main product entity.
     Each product has one or more variants (colour + size combinations).
@@ -94,7 +97,7 @@ class Product(models.Model):
         Category, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='products'
     )
-    barcode = models.CharField(max_length=50, unique=True, db_index=True)
+    barcode = models.CharField(max_length=50)
     image = models.ImageField(upload_to=product_image_path, null=True, blank=True)
     # Purchase price (owner-only in the API) / sale price
     base_cost_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -109,7 +112,9 @@ class Product(models.Model):
         verbose_name = _('Product')
         verbose_name_plural = _('Products')
         ordering = ['name']
-        indexes = [models.Index(fields=['name', 'is_active'])]
+        constraints = [models.UniqueConstraint(fields=['store', 'name'], name='%(class)s_store_name')]
+        indexes = [models.Index(fields=['store', 'is_active', 'name'])]
+        constraints = [models.UniqueConstraint(fields=['store', 'barcode'], name='product_store_barcode')]
 
     def __str__(self):
         return self.name
@@ -119,7 +124,7 @@ class Product(models.Model):
         return sum(v.stock_quantity for v in self.variants.filter(is_active=True))
 
 
-class ProductVariant(models.Model):
+class ProductVariant(StoreOwned):
     """
     Product variant = product + colour + size.
     Own barcode, SKU, selling price and stock quantity.
@@ -131,8 +136,8 @@ class ProductVariant(models.Model):
     size = models.ForeignKey(
         Size, on_delete=models.SET_NULL, null=True, blank=True, related_name='variants'
     )
-    sku = models.CharField(max_length=100, unique=True, db_index=True)
-    barcode = models.CharField(max_length=50, unique=True, db_index=True)
+    sku = models.CharField(max_length=100)
+    barcode = models.CharField(max_length=50)
     selling_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cost_price = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True,
@@ -149,7 +154,11 @@ class ProductVariant(models.Model):
         verbose_name = _('Product variant')
         verbose_name_plural = _('Product variants')
         unique_together = [['product', 'color', 'size']]
-        indexes = [models.Index(fields=['product', 'is_active'])]
+        indexes = [models.Index(fields=['store', 'product', 'is_active'])]
+        constraints = [
+            models.UniqueConstraint(fields=['store', 'barcode'], name='variant_store_barcode'),
+            models.UniqueConstraint(fields=['store', 'sku'], name='variant_store_sku'),
+        ]
 
     def __str__(self):
         parts = [self.product.name]

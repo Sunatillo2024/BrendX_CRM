@@ -7,6 +7,7 @@ Credit / installment sales were intentionally removed.
 from decimal import Decimal
 
 from django.db import models
+from apps.stores.models import StoreOwned
 from django.utils.translation import gettext_lazy as _
 
 CENTS = Decimal('0.01')
@@ -21,7 +22,7 @@ def _dec(value):
     return Decimal(str(value))
 
 
-class Sale(models.Model):
+class Sale(StoreOwned):
     """Core sale transaction (POS check)."""
 
     PAYMENT_CASH = 'cash'
@@ -47,7 +48,7 @@ class Sale(models.Model):
     ]
 
     # Sequential receipt number (Чек №000124)
-    number = models.PositiveIntegerField(unique=True, db_index=True)
+    number = models.PositiveIntegerField()
     customer = models.ForeignKey(
         'customers.Customer', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='sales'
@@ -86,7 +87,8 @@ class Sale(models.Model):
         verbose_name = _('Sale')
         verbose_name_plural = _('Sales')
         ordering = ['-created_at']
-        indexes = [models.Index(fields=['-created_at', 'status'])]
+        indexes = [models.Index(fields=['store', 'status', '-created_at'])]
+        constraints = [models.UniqueConstraint(fields=['store', 'number'], name='sale_store_number')]
 
     def __str__(self):
         return f'{self.sale_number} - {self.total_amount}'
@@ -155,7 +157,7 @@ class SaleItem(models.Model):
 class Receipt(models.Model):
     """Printed receipt record for a sale."""
     sale = models.OneToOneField(Sale, on_delete=models.CASCADE, related_name='receipt')
-    receipt_number = models.CharField(max_length=30, unique=True)
+    receipt_number = models.CharField(max_length=30)
     generated_at = models.DateTimeField(auto_now_add=True)
     printed_count = models.IntegerField(default=0)
 
@@ -180,6 +182,8 @@ class SaleReturn(models.Model):
     ], default='other')
     notes = models.TextField(blank=True)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    cash_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    card_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     created_by = models.ForeignKey(
         'authentication.User', on_delete=models.SET_NULL, null=True, related_name='sale_returns'
     )

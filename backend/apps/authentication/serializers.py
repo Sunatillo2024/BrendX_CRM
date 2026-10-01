@@ -20,9 +20,9 @@ def validate_pin_format(value):
     return str(value)
 
 
-def pin_is_taken(pin, exclude_user_id=None):
+def pin_is_taken(pin, exclude_user_id=None, store=None):
     """PINs must be unique, otherwise PIN login cannot identify the employee."""
-    qs = User.objects.filter(is_active=True).exclude(pin_hash='')
+    qs = User.objects.filter(is_active=True, store=store).exclude(pin_hash='')
     if exclude_user_id:
         qs = qs.exclude(pk=exclude_user_id)
     for user in qs.only('id', 'pin_hash'):
@@ -40,9 +40,18 @@ class UserSerializer(serializers.ModelSerializer):
     pin_set = serializers.BooleanField(source='has_pin', read_only=True)
     display_name = serializers.CharField(read_only=True)
 
+    store_detail = serializers.SerializerMethodField()
+
+    def get_store_detail(self, obj):
+        if not obj.store_id:
+            return None
+        from apps.stores.serializers import StoreSettingsSerializer
+        return StoreSettingsSerializer(obj.store).data
+
     class Meta:
         model = User
         fields = [
+            'store', 'store_detail',
             'id', 'username', 'email', 'first_name', 'last_name', 'display_name',
             'role', 'phone', 'avatar', 'language', 'is_active', 'pin_set', 'created_at',
         ]
@@ -67,13 +76,13 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return value
 
     def validate_role(self, value):
-        if value not in dict(User.ROLE_CHOICES):
+        if value not in ('manager', 'cashier'):
             raise serializers.ValidationError('Invalid role.')
         return value
 
     def validate(self, attrs):
         pin = attrs.get('pin')
-        if pin and pin_is_taken(pin):
+        if pin and pin_is_taken(pin, store=self.context['request'].user.store):
             raise serializers.ValidationError({'pin': 'This PIN is already used by another employee.'})
         return attrs
 
@@ -89,6 +98,11 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
+    def validate_role(self, value):
+        if value not in ('manager', 'cashier'):
+            raise serializers.ValidationError('Only manager/cashier roles can be assigned here.')
+        return value
+
     """Owner edits an employee. Password/PIN are never mass-assigned here."""
     pin = serializers.CharField(write_only=True, required=False, allow_blank=True, validators=[validate_pin_format])
 
@@ -101,7 +115,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         pin = attrs.get('pin')
-        if pin and pin_is_taken(pin, exclude_user_id=self.instance.pk if self.instance else None):
+        if pin and pin_is_taken(pin, exclude_user_id=self.instance.pk if self.instance else None, store=self.context['request'].user.store):
             raise serializers.ValidationError({'pin': 'This PIN is already used by another employee.'})
         return attrs
 
@@ -156,7 +170,9 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class PinLoginSerializer(serializers.Serializer):
-    pin = serializers.CharField(required=True)
+    pin = serializers.CharField(required=True, validators=[validate_pin_format])
+    store_code = serializers.CharField(required=False)
+    platform = serializers.BooleanField(default=False)
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -172,5 +188,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
     def validate(self, attrs):
         data = super().validate(attrs)
+        from .backends import check_access
+        check_access(self.user)
         data['user'] = UserSerializer(self.user).data
         return data

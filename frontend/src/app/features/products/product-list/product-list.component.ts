@@ -108,6 +108,7 @@ import { ToastService } from '../../../core/ui/toast.service';
                               <a class="menu-item" [routerLink]="['/products', p.id, 'edit']">
                                 <mat-icon>edit</mat-icon> {{ 'common.edit' | t }}
                               </a>
+                              <a class="menu-item" routerLink="/products/new" [queryParams]="{duplicate:p.id}"><mat-icon>content_copy</mat-icon>{{ i18n.lang() === 'ru' ? 'Дублировать товар' : 'Mahsulot nusxasi' }}</a>
                               <a class="menu-item" routerLink="/stock"
                                  [queryParams]="{ q: p.barcode }">
                                 <mat-icon>warehouse</mat-icon> {{ 'menu.stock' | t }}
@@ -170,7 +171,7 @@ export class ProductListComponent implements OnInit {
   private api = inject(ApiService);
   private toast = inject(ToastService);
   private confirm = inject(ConfirmService);
-  private i18n = inject(TranslationService);
+  i18n = inject(TranslationService);
   private route = inject(ActivatedRoute);
   auth = inject(AuthService);
 

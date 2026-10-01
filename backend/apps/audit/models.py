@@ -53,6 +53,7 @@ class AuditLog(models.Model):
         (ACTION_SETTINGS_CHANGED, 'Settings changed'),
     ]
 
+    store = models.ForeignKey('stores.Store', on_delete=models.PROTECT, null=True, blank=True)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='audit_logs'

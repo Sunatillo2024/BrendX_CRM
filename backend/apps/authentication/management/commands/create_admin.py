@@ -25,8 +25,11 @@ class Command(BaseCommand):
             username=username,
             defaults={'email': email},
         )
+        if not created:
+            self.stdout.write('Account already exists; credentials unchanged.')
+            return
         user.email = email
-        user.role = User.ROLE_OWNER
+        user.role = User.ROLE_PLATFORM_ADMIN
         user.is_staff = True
         user.is_superuser = True
         user.is_active = True

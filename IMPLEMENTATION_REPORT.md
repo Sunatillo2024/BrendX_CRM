@@ -1,5 +1,102 @@
 # Implementation Report — BrandX → Clothes Shop CRM/POS
 
+## Architecture update checkpoint — 2026-10-01
+
+**Work in progress: phases 1–2 audited; phase 3 infrastructure/tooling tested.
+Live data cutover and phases 4–15 are not complete.** Historical sections below
+refer to the earlier single-store implementation, not a completed multi-store platform.
+
+### PostgreSQL Migration
+
+- PostgreSQL 17 is the primary configured backend; psycopg 3.2.13 added.
+- MySQL-only connection options are conditional for source transfer. Hardcoded
+  Django DB credentials removed. Startup readiness uses Django's DB connection.
+- Docker adds an independent PostgreSQL volume and retains MySQL under a legacy
+  profile. Existing MySQL source/media are not deleted or switched live.
+- Bootstrap/seed disabled by default so an import target remains empty and
+  container restarts do not automatically reset account credentials.
+- POS locks only the variant table to avoid PostgreSQL nullable-outer-join locks.
+- `transfer_database export/import/verify` preserves IDs, PIN/password hashes,
+  Decimal snapshots and relationships; checks counts/content digests and database
+  constraints, resets sequences and rolls back invalid imports. Nonempty targets
+  and archive overwrites are refused. Auth permissions use natural keys.
+- README documents backup, frozen writes, protected archives, media, schema-version
+  matching, token invalidation, operator cutover and rollback limitations.
+- No actual customer-data migration/cutover has been performed.
+
+### Multi-Store Architecture
+
+Agreed: legacy data belongs to BrandX; store login uses `/store/<CODE>/login` + PIN.
+Planned shared database with tenant-root FKs, scoped child relations and store-bound
+request/service validation. **Store model, backfill and isolation are pending.**
+
+### Platform Admin
+
+Agreed: existing `admin` becomes a global platform administrator while historical
+cashier references remain intact. Separate BrandX Owner must be provisioned.
+Dedicated `/platform` UI/API and role migration are **pending**; Django admin is
+not the planned commercial panel.
+
+### Owner / Manager / Cashier
+
+Existing single-store role rules remain. Target: owner manages only its store and
+employees; manager operational access without cost/profit; cashier POS and own
+sales/receipts. Store status enforcement, employee relation scoping and restricted
+technical-admin access are **pending**.
+
+### Product Workflow
+
+Audit completed: nullable size/color already permits simple variants, but creation
+is manual. Matrix, simple-product mode, quick category, barcode namespace enforcement
+and duplication are **pending**. Direct stock edits need audited movement writes.
+
+### Statistics
+
+Audit found fully-refunded-sale double subtraction, undiscounted refunds,
+concurrent/duplicate return risks, gross payment totals after refunds, top-product
+return omissions and supporting dashboard panels ignoring date range.
+Historical SaleItem.unit_cost snapshots already exist and must be preserved.
+Target formulas: Revenue = sale totals - period refunds; COGS = historical sold
+cost - period returned cost; Gross Profit = Revenue - COGS; Net Profit = Gross
+Profit - Expenses (other income shown separately). Average receipt basis/refund
+allocation must be documented with the implemented service/tests. **Corrections
+and chart improvements have not yet been implemented.**
+
+### Security
+
+Global querysets and related-ID lookups are unsafe for multiple customers today.
+Fail-closed store scoping, deactivated-store JWT/refresh checks and mandatory
+cross-store read/write/export/statistics tests are **pending**. Do not onboard
+multiple independent stores with this checkpoint.
+
+### Tests
+
+- Baseline: 115 existing tests passed on SQLite.
+- PostgreSQL 17.11: 120 tests passed (existing suite + 5 transfer tests).
+- SQLite: 120 tests passed.
+- Transfer tests: exact data/ID/hash/cost/relationship roundtrip and new-ID allocation;
+  nonempty-target refusal; checksum rejection; unknown-model rejection; failed
+  foreign-key import rolls back all rows. Auth group/permission references included.
+- Django migration drift check: no changes detected.
+- Multi-store and concurrency tests are not implemented yet; browser/end-to-end
+  verification and a real MySQL → PostgreSQL rehearsal are pending.
+
+### Removed Code
+
+No business functionality removed. Replaced MySQL-only readiness logic and
+hardcoded Django DB credentials. Temporary mysqlclient dependency retained for
+source migration; remove only after verified transfer and reference checks.
+
+### Remaining Issues
+
+Complete phases 4–15 and live migration rehearsal/cutover. Keep production backups
+and obtain explicit operational approval before freezing or switching an existing
+installation. Django 5.0.4 is unsupported: a tested Django LTS dependency upgrade
+is necessary before claiming production readiness. Transfer currently holds the
+archive in memory; assess large-data workloads. See ARCHITECTURE_AUDIT.md.
+
+---
+
 Adaptation of the existing BrandX CRM/POS into a simple, fast system for a single
 clothes shop. The existing stack was kept (Django 5 + DRF + MySQL, Angular 19
 standalone). No rewrite: working code was reused and reshaped.

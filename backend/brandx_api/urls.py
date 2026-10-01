@@ -6,6 +6,10 @@ from django.contrib.admin.exceptions import NotRegistered
 from django.urls import include, path
 
 from apps.authentication.admin_login import PinAdminLoginView
+from apps.stores.views import PlatformDashboard, PlatformStoreViewSet, StoreSettingsView
+from rest_framework.routers import DefaultRouter
+platform_router = DefaultRouter()
+platform_router.register('stores', PlatformStoreViewSet, basename='platform-stores')
 
 admin.site.site_header = 'BrandX'
 admin.site.site_title = 'BrandX'
@@ -32,6 +36,9 @@ urlpatterns = [
     # Language switching (used by the admin language chooser).
     path('i18n/', include('django.conf.urls.i18n')),
 
+    path('api/platform/dashboard/', PlatformDashboard.as_view()),
+    path('api/platform/', include(platform_router.urls)),
+    path('api/store/settings/', StoreSettingsView.as_view()),
     path('api/auth/', include('apps.authentication.urls')),
     path('api/products/', include('apps.products.urls')),
     path('api/inventory/', include('apps.inventory.urls')),

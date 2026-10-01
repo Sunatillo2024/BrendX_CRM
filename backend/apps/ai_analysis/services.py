@@ -12,11 +12,13 @@ from apps.sales import services as sales_services
 class FinancialDataCollector:
     """Collects and formats business data for analysis."""
 
-    @staticmethod
-    def get_sales_summary(days: int = 30) -> dict:
+    def __init__(self, store):
+        self.store = store
+
+    def get_sales_summary(self, days: int = 30) -> dict:
         end = timezone.localdate()
         start = end - timedelta(days=days - 1)
-        ops = sales_services.operational_stats(start, end)
+        ops = sales_services.operational_stats(start, end, store=self.store)
         return {
             'sales_count': ops['sales_count'],
             'units_sold': ops['units_sold'],
@@ -27,15 +29,13 @@ class FinancialDataCollector:
             'returns': float(ops['returns_total']),
         }
 
-    @staticmethod
-    def get_top_products(limit: int = 10) -> list:
+    def get_top_products(self, limit: int = 10) -> list:
         end = timezone.localdate()
         start = end - timedelta(days=29)
-        return sales_services.top_products(start, end, limit)
+        return sales_services.top_products(start, end, limit, store=self.store)
 
-    @staticmethod
-    def get_inventory_health() -> dict:
-        variants = ProductVariant.objects.filter(is_active=True, product__is_active=True)
+    def get_inventory_health(self) -> dict:
+        variants = ProductVariant.objects.filter(store=self.store, is_active=True, product__is_active=True)
         out_of_stock = variants.filter(stock_quantity=0).count()
         low_stock = variants.filter(stock_quantity__gt=0).filter(
             stock_quantity__lte=models_low_threshold()
@@ -48,9 +48,8 @@ class FinancialDataCollector:
             'in_stock': total - out_of_stock - low_stock,
         }
 
-    @staticmethod
-    def get_customer_insights() -> dict:
-        return {'total_customers': Customer.objects.filter(is_active=True).count()}
+    def get_customer_insights(self) -> dict:
+        return {'total_customers': Customer.objects.filter(store=self.store, is_active=True).count()}
 
 
 def models_low_threshold():
@@ -66,10 +65,10 @@ class AIAnalysisService:
     feature never breaks the app.
     """
 
-    def __init__(self):
+    def __init__(self, store):
         self.api_key = getattr(settings, 'GROQ_API_KEY', '')
         self.model = getattr(settings, 'AI_MODEL', 'llama3-8b-8192')
-        self.collector = FinancialDataCollector()
+        self.collector = FinancialDataCollector(store)
 
     def analyze(self, query: str, context_type: str = 'general') -> dict:
         context = self._build_context()

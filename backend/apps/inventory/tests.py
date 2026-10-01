@@ -3,6 +3,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.authentication.models import User
+from apps.stores.models import Store
 from apps.products.models import Category, Product, ProductVariant
 
 from .models import StockMovement, StockReceipt
@@ -10,23 +11,24 @@ from .models import StockMovement, StockReceipt
 
 class InventoryBase(APITestCase):
     def setUp(self):
+        self.store = Store.objects.create(name='Test', code='TEST')
         self.client = APIClient()
         self.owner = self._user('owner', User.ROLE_OWNER)
         self.manager = self._user('manager', User.ROLE_MANAGER)
         self.cashier = self._user('cashier', User.ROLE_CASHIER)
         self.auth(self.owner)
 
-        category = Category.objects.create(name='Futbolka')
-        self.product = Product.objects.create(
+        category = Category.objects.create(store=self.store, name='Futbolka')
+        self.product = Product.objects.create(store=self.store, 
             name='Futbolka Classic', category=category, barcode='2000000000001',
             base_cost_price=20000, base_selling_price=35000,
         )
-        self.variant = ProductVariant.objects.create(
+        self.variant = ProductVariant.objects.create(store=self.store, 
             product=self.product, sku='SKU-1', barcode='2000000000018', stock_quantity=10,
         )
 
     def _user(self, username, role):
-        user = User(username=username, role=role, first_name=username.title())
+        user = User(store=self.store, username=username, role=role, first_name=username.title())
         user.set_password('StrongPass!234')
         user.set_pin('0000' if role == User.ROLE_OWNER else '1111')
         user.save()

@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from apps.authentication.models import User
+from apps.stores.models import Store
 from apps.inventory.models import StockMovement
 from apps.products.models import Category, Color, Product, ProductVariant, Size
 
@@ -13,26 +14,27 @@ from .models import Receipt, Sale, SaleReturn
 
 class SaleBase(APITestCase):
     def setUp(self):
+        self.store = Store.objects.create(name='Test', code='TEST')
         self.client = APIClient()
         self.owner = self._user('owner', User.ROLE_OWNER)
         self.manager = self._user('manager', User.ROLE_MANAGER)
         self.cashier = self._user('cashier', User.ROLE_CASHIER)
         self.auth(self.cashier)
 
-        category = Category.objects.create(name='Futbolka')
-        black = Color.objects.create(name='Qora', hex_code='#000000')
-        medium = Size.objects.create(name='M', size_type='letter')
-        self.product = Product.objects.create(
+        category = Category.objects.create(store=self.store, name='Futbolka')
+        black = Color.objects.create(store=self.store, name='Qora', hex_code='#000000')
+        medium = Size.objects.create(store=self.store, name='M', size_type='letter')
+        self.product = Product.objects.create(store=self.store, 
             name='Futbolka Classic', category=category, barcode='3000000000001',
             base_cost_price=2000, base_selling_price=2300,
         )
-        self.variant = ProductVariant.objects.create(
+        self.variant = ProductVariant.objects.create(store=self.store, 
             product=self.product, color=black, size=medium,
             sku='SKU-M', barcode='3000000000018', stock_quantity=10,
         )
 
     def _user(self, username, role):
-        user = User(username=username, role=role, first_name=username.title())
+        user = User(store=self.store, username=username, role=role, first_name=username.title())
         user.set_password('StrongPass!234')
         user.set_pin({'owner': '0000', 'manager': '1111', 'cashier': '2222'}[role])
         user.save()

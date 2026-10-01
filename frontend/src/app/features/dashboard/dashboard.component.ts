@@ -2,6 +2,9 @@ import { CommonModule } from '@angular/common';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
+import { BaseChartDirective } from 'ng2-charts';
+import { Chart, registerables, ChartConfiguration } from 'chart.js';
+Chart.register(...registerables);
 import { RouterLink } from '@angular/router';
 import { MoneyPipe, TranslatePipe } from '../../core/i18n/translate.pipe';
 import {
@@ -10,12 +13,12 @@ import {
 import { ApiService } from '../../core/services/api.service';
 import { AuthService } from '../../core/services/auth.service';
 
-type PeriodKey = 'today' | 'yesterday' | 'week' | 'month' | 'custom';
+type PeriodKey = 'today' | 'yesterday' | 'week' | 'days30' | 'month' | 'custom';
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, FormsModule, MatIconModule, RouterLink, TranslatePipe, MoneyPipe],
+  imports: [CommonModule, FormsModule, MatIconModule, RouterLink, TranslatePipe, MoneyPipe, BaseChartDirective],
   template: `
     <div class="page-head">
       <div>
@@ -158,16 +161,7 @@ type PeriodKey = 'today' | 'yesterday' | 'week' | 'month' | 'custom';
               <div class="section-title"><mat-icon>show_chart</mat-icon> {{ 'dashboard.chart' | t }}</div>
             </div>
             @if (d.chart?.length) {
-              <div class="bars">
-                @for (point of d.chart; track point.date) {
-                  <div class="bar-col" [title]="point.date + ': ' + (point.revenue | money)">
-                    <div class="bar-track">
-                      <div class="bar" [style.height.%]="barHeight(point.revenue)"></div>
-                    </div>
-                    <span class="bar-label">{{ point.date.slice(5) }}</span>
-                  </div>
-                }
-              </div>
+              <div style="height:260px"><canvas baseChart [type]="'line'" [data]="chartData()" [options]="chartOptions"></canvas></div>
             } @else {
               <div class="empty-state"><mat-icon>bar_chart</mat-icon>
                 <p>{{ 'dashboard.noSales' | t }}</p></div>
@@ -276,7 +270,7 @@ type PeriodKey = 'today' | 'yesterday' | 'week' | 'month' | 'custom';
                 <tbody>
                   @for (v of d.low_stock; track v.id) {
                     <tr>
-                      <td class="strong">{{ v.product_name }}</td>
+                      <td class="strong"><a [routerLink]="['/products',v.product_id,'edit']">{{ v.product_name }}</a></td>
                       <td class="muted small">{{ v.color_name || '—' }} / {{ v.size_name || '—' }}</td>
                       <td class="num">
                         <span class="badge" [class.danger]="v.stock_quantity <= 0"
@@ -369,11 +363,13 @@ export class DashboardComponent implements OnInit {
   private api = inject(ApiService);
   auth = inject(AuthService);
 
-  readonly periods: PeriodKey[] = ['today', 'yesterday', 'week', 'month', 'custom'];
+  readonly periods: PeriodKey[] = ['today', 'yesterday', 'week', 'days30', 'month', 'custom'];
   period: PeriodKey = 'today';
   dateFrom = '';
   dateTo = '';
 
+  chartOptions: ChartConfiguration<'line'>['options'] = {responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y} ${this.auth.currentUser()?.store_detail?.currency_symbol || 'сом'} · ${this.data()?.chart?.[ctx.dataIndex]?.count || 0}`}}},scales:{x:{ticks:{maxTicksLimit:8},grid:{display:false}},y:{beginAtZero:true}}};
+  chartData = computed<ChartConfiguration<'line'>['data']>(()=>({labels:(this.data()?.chart||[]).map(p=>p.date.slice(0,10)+' '+p.date.slice(11,16)),datasets:[{data:(this.data()?.chart||[]).map(p=>Number(p.revenue)),borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.1)',fill:true,tension:.25,pointRadius:2}]}));
   data = signal<DashboardPayload | null>(null);
   loading = signal(true);
   private previous = signal<OperationalStats | null>(null);
@@ -424,10 +420,10 @@ export class DashboardComponent implements OnInit {
 
     // Supporting panels.
     if (!this.auth.isCashier()) {
-      this.api.getSales({ page_size: 5, ordering: '-created_at' })
+      this.api.getSales({ ...params, page_size: 5, ordering: '-created_at' })
         .subscribe(r => this.recentSales.set(r.results));
       if (this.auth.isOwner()) {
-        this.api.getFinanceEntries({ page_size: 5, entry_type: 'expense', ordering: '-entry_date' })
+        this.api.getFinanceEntries({ ...params, page_size: 5, entry_type: 'expense', ordering: '-entry_date' })
           .subscribe(r => this.recentExpenses.set(r.results));
       }
     }

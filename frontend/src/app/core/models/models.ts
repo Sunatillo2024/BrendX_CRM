@@ -1,6 +1,7 @@
 // TypeScript models mirroring the Django API responses.
 
-export type UserRole = 'owner' | 'manager' | 'cashier';
+export type UserRole = 'platform_admin' | 'owner' | 'manager' | 'cashier';
+export interface StoreSettings { id: number; name: string; code: string; is_active: boolean; phone: string; address: string; receipt_header: string; receipt_footer: string; currency_code: string; currency_symbol: string; low_stock_threshold: number; default_language: LangCode; timezone: string; }
 export type PaymentMethod = 'cash' | 'card' | 'mixed';
 export type SaleStatus = 'completed' | 'partially_refunded' | 'refunded' | 'cancelled';
 export type MovementType = 'purchase' | 'sale' | 'return' | 'adjustment' | 'inventory';
@@ -9,6 +10,8 @@ export type LangCode = 'uz' | 'ru';
 
 // ─── Auth ─────────────────────────────────────────────────────────
 export interface User {
+  store: number | null;
+  store_detail: StoreSettings | null;
   id: number;
   username: string;
   display_name: string;

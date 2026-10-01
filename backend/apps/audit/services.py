@@ -2,7 +2,7 @@
 from .models import AuditLog
 
 
-def log_action(action, *, user=None, entity='', entity_id='', details=None):
+def log_action(action, *, user=None, entity='', entity_id='', details=None, store=None):
     """
     Record an audit entry.
 
@@ -10,6 +10,7 @@ def log_action(action, *, user=None, entity='', entity_id='', details=None):
     """
     try:
         return AuditLog.objects.create(
+            store=store or getattr(user, 'store', None),
             user=user if getattr(user, 'pk', None) else None,
             username=getattr(user, 'username', '') or '',
             action=action,

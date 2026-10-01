@@ -16,17 +16,20 @@ class User(AbstractUser):
       - cashier : POS + own sales only
     """
 
+    ROLE_PLATFORM_ADMIN = 'platform_admin'
     ROLE_OWNER = 'owner'
     ROLE_MANAGER = 'manager'
     ROLE_CASHIER = 'cashier'
 
     ROLE_CHOICES = [
+        (ROLE_PLATFORM_ADMIN, 'Platform Admin'),
         (ROLE_OWNER, 'Owner'),
         (ROLE_MANAGER, 'Manager'),
         (ROLE_CASHIER, 'Cashier'),
     ]
 
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_CASHIER)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_CASHIER)
+    store = models.ForeignKey('stores.Store', on_delete=models.PROTECT, null=True, blank=True)
     phone = models.CharField(max_length=20, blank=True)
     avatar = models.ImageField(upload_to='avatars/', null=True, blank=True)
 
@@ -44,6 +47,11 @@ class User(AbstractUser):
         db_table = 'users'
         verbose_name = _('User')
         verbose_name_plural = _('Users')
+        constraints = [models.CheckConstraint(
+            check=(models.Q(role='platform_admin', store__isnull=True) |
+                   models.Q(role__in=['owner', 'manager', 'cashier'], store__isnull=False)),
+            name='user_role_store_context',
+        )]
 
     def __str__(self):
         return f'{self.display_name} ({self.get_role_display()})'

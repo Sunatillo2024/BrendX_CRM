@@ -2,6 +2,10 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
+from .backends import StoreRefreshSerializer
+
+class StoreTokenRefreshView(TokenRefreshView):
+    serializer_class = StoreRefreshSerializer
 
 from .views import CustomTokenObtainPairView, LogoutView, PinLoginView, UserViewSet
 
@@ -13,7 +17,7 @@ urlpatterns = [
     path('login/pin/', PinLoginView.as_view(), name='pin-login'),
     # Technical fallback: username + password
     path('login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', StoreTokenRefreshView.as_view(), name='token_refresh'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('', include(router.urls)),
 ]

@@ -19,6 +19,7 @@ from apps.audit.models import AuditLog
 from apps.audit.services import log_action
 from apps.authentication.permissions import IsAuthenticatedWithRole, IsOwner, IsOwnerOrManager
 from apps.common.filters import DateRangeFilterMixin, resolve_period
+from apps.common.tenancy import TenantViewMixin, active_store
 from apps.customers.models import Customer
 from apps.inventory import services as inventory_services
 from apps.inventory.models import StockMovement
@@ -57,7 +58,7 @@ def _labels(request):
     return RECEIPT_LABELS.get(lang, RECEIPT_LABELS['uz'])
 
 
-class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
+class SaleViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
     """POS sales: create, browse, print receipts, process returns."""
     queryset = Sale.objects.select_related('cashier', 'customer').prefetch_related(
         'items__product_variant', 'returns__items'
@@ -119,21 +120,21 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         transaction so both are race-safe: the row locks are held for the whole
         checkout and a failure rolls the whole sale back.
         """
+        store = active_store(request.user)
         customer = None
         if data.get('customer_id'):
-            customer = Customer.objects.get(pk=data['customer_id'])
+            customer = Customer.objects.get(pk=data['customer_id'], store=store)
 
         with transaction.atomic():
             # Lock the last sale row so receipt numbers stay sequential.
-            last = Sale.objects.select_for_update().order_by('-number').first()
-            number = (last.number if last else 0) + 1
+            number = store.next_number('sale')
 
             lines = []
             subtotal = Decimal('0')
             for raw in data['items']:
-                variant = ProductVariant.objects.select_for_update().select_related(
+                variant = ProductVariant.objects.select_for_update(of=('self',)).select_related(
                     'product', 'color', 'size'
-                ).filter(pk=raw['product_variant_id'], is_active=True,
+                ).filter(store=store, pk=raw['product_variant_id'], is_active=True,
                          product__is_active=True).first()
                 if variant is None:
                     raise inventory_services.InsufficientStock(
@@ -167,7 +168,7 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
             )
 
             sale = Sale.objects.create(
-                number=number,
+                number=number, store=store,
                 customer=customer,
                 cashier=request.user,
                 payment_method=data['payment_method'],
@@ -214,8 +215,8 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         sale = self.get_object()
         return Response({
             'sale': SaleSerializer(sale, context={'request': request}).data,
-            'business_name': getattr(settings, 'BUSINESS_NAME', 'BrandX'),
-            'currency': getattr(settings, 'CURRENCY_SYMBOL', 'сом'),
+            'business_name': sale.store.name,
+            'currency': sale.store.currency_symbol,
         })
 
     @action(detail=True, methods=['get'])
@@ -248,7 +249,7 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         bold = ParagraphStyle('bold', parent=small, fontName='Helvetica-Bold')
 
         story = [
-            Paragraph(f"<b>{getattr(settings, 'BUSINESS_NAME', 'BrandX')}</b>",
+            Paragraph(f"<b>{sale.store.name}</b>",
                       ParagraphStyle('h', parent=styles['Title'], fontSize=12, alignment=1)),
             Paragraph(f"{labels['receipt']} №{sale.sale_number}", centre),
             Spacer(1, 0.15 * cm),
@@ -309,55 +310,9 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        sale_items = {item.pk: item for item in sale.items.all()}
-
-        # Validate everything BEFORE opening the transaction so a bad request
-        # can never leave a half-written return behind.
-        for row in data['items']:
-            item = sale_items.get(row['sale_item'])
-            if item is None:
-                return Response(
-                    {'detail': f'Sale item {row["sale_item"]} not found in this sale.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            remaining = item.quantity - item.returned_quantity
-            if row['quantity'] > remaining:
-                return Response(
-                    {'detail': f'Cannot return {row["quantity"]} of "{item.product_name}" '
-                               f'- only {remaining} left to return.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        with transaction.atomic():
-            sale_return = SaleReturn.objects.create(
-                sale=sale,
-                reason=data.get('reason', 'other'),
-                notes=data.get('notes', ''),
-                created_by=request.user,
-            )
-            total = Decimal('0')
-            for row in data['items']:
-                item = sale_items[row['sale_item']]
-                SaleReturnItem.objects.create(
-                    sale_return=sale_return, sale_item=item,
-                    quantity=row['quantity'], unit_price=item.unit_price,
-                )
-                item.returned_quantity += row['quantity']
-                item.save(update_fields=['returned_quantity'])
-
-                inventory_services.return_stock(
-                    item.product_variant, row['quantity'], sale=sale, user=request.user,
-                    notes=data.get('notes', ''),
-                )
-                total += item.unit_price * row['quantity']
-
-            sale_return.total_amount = total
-            sale_return.save(update_fields=['total_amount'])
-
-            fully_returned = all(i.returned_quantity >= i.quantity for i in sale.items.all())
-            sale.status = (Sale.STATUS_REFUNDED if fully_returned
-                           else Sale.STATUS_PARTIALLY_REFUNDED)
-            sale.save(update_fields=['status', 'updated_at'])
+        from .returns import process_return
+        sale_return = process_return(sale, data, request.user)
+        total = sale_return.total_amount
 
         log_action(AuditLog.ACTION_SALE_RETURNED, user=request.user, entity='sale',
                    entity_id=sale.pk,
@@ -374,7 +329,10 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            for item in sale.items.all():
+            sale = Sale.objects.select_for_update().get(pk=sale.pk, store=request.user.store)
+            if sale.status == Sale.STATUS_CANCELLED:
+                return Response({'detail': 'Sale already cancelled.'}, status=400)
+            for item in sale.items.select_for_update():
                 pending = item.quantity - item.returned_quantity
                 if pending > 0:
                     inventory_services.return_stock(
@@ -402,7 +360,7 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         user = request.user
 
         if getattr(user, 'is_cashier', False):
-            own = sales_services.sales_in_range(start, end).filter(cashier=user)
+            own = sales_services.sales_in_range(start, end, store=active_store(request.user)).filter(cashier=user)
             return Response({
                 'role': user.role,
                 'period': {'start': start, 'end': end},
@@ -415,12 +373,12 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         payload = {
             'role': user.role,
             'period': {'start': start, 'end': end},
-            'operational': sales_services.operational_stats(start, end),
-            'top_products': sales_services.top_products(start, end, 5),
-            'chart': sales_services.sales_by_day(start, end) if start and end else [],
+            'operational': sales_services.operational_stats(start, end, store=active_store(request.user)),
+            'top_products': sales_services.top_products(start, end, 5, store=active_store(request.user)),
+            'chart': sales_services.sales_by_day(start, end, store=active_store(request.user)) if start and end else [],
             'low_stock': VariantSearchSerializer(
                 ProductVariant.objects.filter(
-                    is_active=True, product__is_active=True,
+                    store=active_store(request.user), is_active=True, product__is_active=True,
                     stock_quantity__lte=models.F('low_stock_threshold'),
                 ).select_related('product', 'color', 'size').order_by('stock_quantity')[:10],
                 many=True,
@@ -428,14 +386,14 @@ class SaleViewSet(DateRangeFilterMixin, viewsets.ModelViewSet):
         }
 
         if user.can_view_financials:
-            payload['financial'] = sales_services.financial_stats(start, end)
+            payload['financial'] = sales_services.financial_stats(start, end, store=active_store(request.user))
         else:
             payload['financial'] = None
 
         return Response(payload)
 
 
-class SaleReturnViewSet(DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
+class SaleReturnViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ReadOnlyModelViewSet):
     """Return history (read-only - returns are created through the sale)."""
     queryset = SaleReturn.objects.select_related('sale', 'created_by').prefetch_related(
         'items__sale_item'

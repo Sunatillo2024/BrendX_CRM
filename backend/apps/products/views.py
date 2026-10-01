@@ -16,6 +16,7 @@ from apps.audit.models import AuditLog
 from apps.audit.services import log_action
 from apps.authentication.permissions import IsOwnerOrManager, IsAuthenticatedWithRole
 
+from apps.common.tenancy import TenantViewMixin, active_store
 from .models import Category, Color, Product, ProductVariant, Size
 from .serializers import (
     CategorySerializer, ColorSerializer, ProductListSerializer, ProductSerializer,
@@ -29,7 +30,7 @@ class CategoryFilter(django_filters.FilterSet):
         fields = ['is_active']
 
 
-class CategoryViewSet(viewsets.ModelViewSet):
+class CategoryViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = Category.objects.all().order_by('name')
     serializer_class = CategorySerializer
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -42,12 +43,12 @@ class CategoryViewSet(viewsets.ModelViewSet):
         return [IsAuthenticatedWithRole()]
 
     def perform_create(self, serializer):
-        category = serializer.save()
+        category = serializer.save(store=active_store(self.request.user))
         log_action(AuditLog.ACTION_CATEGORY_CHANGED, user=self.request.user, entity='category',
                    entity_id=category.pk, details={'name': category.name, 'op': 'create'})
 
     def perform_update(self, serializer):
-        category = serializer.save()
+        category = serializer.save(store=active_store(self.request.user))
         log_action(AuditLog.ACTION_CATEGORY_CHANGED, user=self.request.user, entity='category',
                    entity_id=category.pk, details={'name': category.name, 'op': 'update'})
 
@@ -74,7 +75,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
 
-class ColorViewSet(viewsets.ModelViewSet):
+class ColorViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = Color.objects.all().order_by('name')
     serializer_class = ColorSerializer
     search_fields = ['name']
@@ -85,7 +86,7 @@ class ColorViewSet(viewsets.ModelViewSet):
         return [IsAuthenticatedWithRole()]
 
 
-class SizeViewSet(viewsets.ModelViewSet):
+class SizeViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = Size.objects.all().order_by('size_type', 'display_order')
     serializer_class = SizeSerializer
     search_fields = ['name']
@@ -97,7 +98,7 @@ class SizeViewSet(viewsets.ModelViewSet):
         return [IsAuthenticatedWithRole()]
 
 
-class ProductViewSet(viewsets.ModelViewSet):
+class ProductViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = Product.objects.select_related('category').prefetch_related(
         'variants__color', 'variants__size'
     ).order_by('name')
@@ -117,7 +118,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         return [IsAuthenticatedWithRole()]
 
     def perform_create(self, serializer):
-        product = serializer.save()
+        product = serializer.save(store=active_store(self.request.user))
         log_action(AuditLog.ACTION_PRODUCT_CREATED, user=self.request.user, entity='product',
                    entity_id=product.pk, details={'name': product.name, 'barcode': product.barcode})
 
@@ -125,7 +126,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         before = {'base_selling_price': str(serializer.instance.base_selling_price),
                   'base_cost_price': str(serializer.instance.base_cost_price),
                   'is_active': serializer.instance.is_active}
-        product = serializer.save()
+        product = serializer.save(store=active_store(self.request.user))
         after = {'base_selling_price': str(product.base_selling_price),
                  'base_cost_price': str(product.base_cost_price),
                  'is_active': product.is_active}
@@ -172,7 +173,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         limit = min(int(request.query_params.get('limit', 50)), 200)
 
         qs = ProductVariant.objects.select_related('product', 'color', 'size').filter(
-            is_active=True, product__is_active=True
+            store=active_store(request.user), is_active=True, product__is_active=True
         )
         if query:
             qs = qs.filter(
@@ -195,12 +196,12 @@ class ProductViewSet(viewsets.ModelViewSet):
             return Response({'detail': 'Barcode required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         variant = ProductVariant.objects.select_related('product', 'color', 'size').filter(
-            barcode=code, is_active=True
+            store=active_store(request.user), barcode=code, is_active=True
         ).first()
         if variant:
             return Response({'type': 'variant', 'variant': VariantSearchSerializer(variant).data})
 
-        product = Product.objects.filter(barcode=code, is_active=True).first()
+        product = Product.objects.filter(store=active_store(request.user), barcode=code, is_active=True).first()
         if product:
             variants = product.variants.filter(is_active=True).select_related('color', 'size')
             return Response({
@@ -215,12 +216,12 @@ class ProductViewSet(viewsets.ModelViewSet):
     def low_stock(self, request):
         """Variants at or below their low-stock threshold."""
         variants = ProductVariant.objects.filter(
-            is_active=True, product__is_active=True, stock_quantity__lte=F('low_stock_threshold')
+            store=active_store(request.user), is_active=True, product__is_active=True, stock_quantity__lte=F('low_stock_threshold')
         ).select_related('product', 'color', 'size').order_by('stock_quantity')
         return Response(VariantSearchSerializer(variants, many=True).data)
 
 
-class ProductVariantViewSet(viewsets.ModelViewSet):
+class ProductVariantViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = ProductVariant.objects.select_related(
         'product', 'color', 'size'
     ).order_by('product__name')

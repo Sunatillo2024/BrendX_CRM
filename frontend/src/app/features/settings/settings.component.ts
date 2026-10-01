@@ -1,3 +1,4 @@
+import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -20,6 +21,17 @@ import { AuthService } from '../../core/services/auth.service';
     </div>
 
     <div class="page-body">
+      @if(auth.isOwner() && store){<div class="card mb-16"><h3>{{ i18n.lang()==='ru' ? 'Настройки магазина' : 'Do‘kon sozlamalari' }}</h3><div class="form-grid">
+        <div class="field"><label>{{ i18n.lang()==='ru' ? 'Название' : 'Nomi' }}</label><input class="input" [(ngModel)]="store.name"></div>
+        <div class="field"><label>{{ 'employees.phone' | t }}</label><input class="input" [(ngModel)]="store.phone"></div>
+        <div class="field"><label>{{ i18n.lang()==='ru' ? 'Адрес' : 'Manzil' }}</label><input class="input" [(ngModel)]="store.address"></div>
+        <div class="field"><label>{{ i18n.lang()==='ru' ? 'Заголовок чека' : 'Chek sarlavhasi' }}</label><input class="input" [(ngModel)]="store.receipt_header"></div>
+        <div class="field"><label>{{ i18n.lang()==='ru' ? 'Текст внизу чека' : 'Chek oxiridagi matn' }}</label><input class="input" [(ngModel)]="store.receipt_footer"></div>
+        <div class="field"><label>{{ 'settings.currency' | t }}</label><input class="input" [(ngModel)]="store.currency_code" maxlength="3"><input class="input" [(ngModel)]="store.currency_symbol" maxlength="12"></div>
+        <div class="field"><label>{{ 'products.lowStock' | t }}</label><input class="input" type="number" min="0" [(ngModel)]="store.low_stock_threshold"></div>
+        <div class="field"><label>{{ i18n.lang()==='ru' ? 'Часовой пояс' : 'Vaqt mintaqasi' }}</label><input class="input" [(ngModel)]="store.timezone"></div>
+        <div class="field"><label>{{ 'settings.changeLanguage' | t }}</label><select class="select" [(ngModel)]="store.default_language"><option value="ru">Русский</option><option value="uz">O‘zbekcha</option></select></div>
+      </div><button class="btn primary mt-16" (click)="saveStore()">{{ 'common.save' | t }}</button></div>}
       <div class="grid grid-2">
         <!-- Profile -->
         <div class="card">
@@ -96,7 +108,7 @@ import { AuthService } from '../../core/services/auth.service';
           <div class="kv"><span class="muted">{{ 'employees.role' | t }}</span>
             <b>{{ ('role.' + (auth.role() || '')) | t }}</b></div>
           <div class="kv"><span class="muted">{{ 'settings.currency' | t }}</span>
-            <b>{{ environment.currency }}</b></div>
+            <b>{{ auth.currentUser()?.store_detail?.currency_symbol || environment.currency }}</b></div>
           <div class="kv"><span class="muted">{{ 'employees.username' | t }}</span>
             <b>{{ auth.currentUser()?.username }}</b></div>
           <div class="kv"><span class="muted">{{ 'settings.version' | t }}</span>
@@ -124,6 +136,10 @@ import { AuthService } from '../../core/services/auth.service';
   `],
 })
 export class SettingsComponent {
+  private http = inject(HttpClient);
+  store: any = null;
+  constructor(){this.http.get(environment.apiUrl+'/store/settings/').subscribe(s=>this.store=s);}
+  saveStore(){this.http.patch(environment.apiUrl+'/store/settings/',this.store).subscribe({next:s=>{this.store=s;this.auth.refreshCurrentUser();this.toast.success(this.i18n.t('common.saved'));},error:()=>this.toast.error(this.i18n.t('common.error'))});}
   private api = inject(ApiService);
   private toast = inject(ToastService);
   i18n = inject(TranslationService);

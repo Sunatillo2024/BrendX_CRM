@@ -1,7 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, HostListener, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
 import { TranslatePipe } from '../../../core/i18n/translate.pipe';
 import { ToastService } from '../../../core/ui/toast.service';
@@ -40,6 +40,12 @@ import { AuthService } from '../../../core/services/auth.service';
             }
           </div>
 
+          <h2>{{ platform ? 'Platform Admin' : storeCode }}</h2>
+          @if (!platform && !storeCode) {
+            <input class="pw-input" [(ngModel)]="storeInput" placeholder="Do‘kon kodi / Код магазина">
+            <button class="btn" (click)="chooseStore()">{{ i18n.lang() === 'ru' ? 'Открыть магазин' : 'Do‘konni ochish' }}</button>
+            <a href="/platform/login">Platform Admin</a>
+          }
           <h2 class="pad-title">{{ 'auth.enterPin' | t }}</h2>
 
           <div class="pin-dots">
@@ -171,6 +177,11 @@ import { AuthService } from '../../../core/services/auth.service';
   `],
 })
 export class LoginComponent {
+  private route = inject(ActivatedRoute);
+  platform = !!this.route.snapshot.data['platform'];
+  storeCode = this.route.snapshot.paramMap.get('code')?.toUpperCase() || '';
+  storeInput = '';
+  chooseStore() { if (this.storeInput.trim()) window.location.assign('/store/' + encodeURIComponent(this.storeInput.trim().toUpperCase()) + '/login'); }
   private auth = inject(AuthService);
   private router = inject(Router);
   private toast = inject(ToastService);
@@ -193,7 +204,7 @@ export class LoginComponent {
 
   @HostListener('document:keydown', ['$event'])
   onKey(event: KeyboardEvent) {
-    if (this.showPasswordForm()) return;
+    if (this.showPasswordForm() || event.target instanceof HTMLInputElement) return;
     if (/^[0-9]$/.test(event.key)) this.press(event.key);
     else if (event.key === 'Backspace') this.clear();
     else if (event.key === 'Enter') this.submit();
@@ -220,11 +231,12 @@ export class LoginComponent {
     this.loading.set(true);
     this.errorMsg.set(null);
 
-    this.auth.loginWithPin(this.pin()).subscribe({
+    this.auth.loginWithPin(this.pin(), this.storeCode, this.platform).subscribe({
       next: () => {
         this.loading.set(false);
         this.pin.set('');
-        this.router.navigate(['/dashboard']);
+        if (this.storeCode) localStorage.setItem('brandx_store_code', this.storeCode);
+        this.router.navigate([this.auth.role() === 'platform_admin' ? '/platform' : this.auth.isCashier() ? '/pos' : '/dashboard']);
       },
       error: err => {
         this.loading.set(false);
@@ -250,7 +262,8 @@ export class LoginComponent {
     this.auth.login(this.username, this.password).subscribe({
       next: () => {
         this.loading.set(false);
-        this.router.navigate(['/dashboard']);
+        if (this.storeCode) localStorage.setItem('brandx_store_code', this.storeCode);
+        this.router.navigate([this.auth.role() === 'platform_admin' ? '/platform' : this.auth.isCashier() ? '/pos' : '/dashboard']);
       },
       error: () => {
         this.loading.set(false);

@@ -39,8 +39,8 @@ export class AuthService {
   }
 
   /** Primary login: PIN only. */
-  loginWithPin(pin: string) {
-    return this.http.post<AuthTokens>(`${environment.apiUrl}/auth/login/pin/`, { pin }).pipe(
+  loginWithPin(pin: string, storeCode = '', platform = false) {
+    return this.http.post<AuthTokens>(`${environment.apiUrl}/auth/login/pin/`, { pin, store_code: storeCode, platform }).pipe(
       tap(res => this.storeSession(res)),
       catchError(err => throwError(() => err)),
     );
@@ -63,7 +63,8 @@ export class AuthService {
       });
     }
     this.clearStorage();
-    this.router.navigate(['/auth']);
+    const code = localStorage.getItem('brandx_store_code');
+    this.router.navigate(code ? ['/store', code, 'login'] : ['/platform/login']);
   }
 
   getAccessToken(): string | null {

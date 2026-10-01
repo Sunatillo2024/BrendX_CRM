@@ -46,7 +46,7 @@ const TITLE_KEYS: Record<string, string> = {
           <div class="brand-logo"><mat-icon>checkroom</mat-icon></div>
           @if (!collapsed()) {
             <div class="brand-text">
-              <span class="brand-name">{{ 'app.name' | t }}</span>
+              <span class="brand-name">{{ auth.currentUser()?.store_detail?.name || ('app.name' | t) }}</span>
               <span class="brand-tag">POS</span>
             </div>
           }
@@ -341,7 +341,7 @@ export class MainLayoutComponent {
     {
       key: 'group.catalog',
       items: [
-        { key: 'menu.products', icon: 'inventory_2', route: '/products' },
+        { key: 'menu.products', icon: 'inventory_2', route: '/products', roles: MANAGER },
         { key: 'menu.categories', icon: 'category', route: '/categories', roles: MANAGER },
       ],
     },

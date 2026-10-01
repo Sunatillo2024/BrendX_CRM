@@ -191,6 +191,9 @@ export class ApiService {
   getReceiptPdfUrl(saleId: number, lang: string): string {
     return this.url(`sales/${saleId}/receipt_pdf/?lang=${lang}`);
   }
+  getReceiptPdf(saleId: number, lang: string): Observable<Blob> {
+    return this.http.get(this.getReceiptPdfUrl(saleId, lang), {responseType:'blob'});
+  }
   getSaleReceiptData(saleId: number): Observable<any> {
     return this.http.get(this.url(`sales/${saleId}/receipt_data/`));
   }

@@ -140,6 +140,91 @@ class MultiStoreTests(APITestCase):
         self.a.save()
         self.assertEqual(self.client.post('/api/auth/login/pin/', {'store_code': 'NEWMAX', 'pin': '0808'}, format='json').status_code, 200)
 
+    def test_discounted_full_return_has_zero_net_revenue_cogs_and_payments(self):
+        sale = self.sales[0]
+        sale.discount_amount = 10
+        sale.total_amount = 90
+        sale.cash_amount = 30
+        sale.card_amount = 60
+        sale.payment_method = 'mixed'
+        sale.save()
+        response = self.client.post(f'/api/sales/{sale.pk}/return_items/',
+            {'items':[{'sale_item':sale.items.get().pk,'quantity':1}]}, format='json')
+        self.assertEqual(response.status_code,201,response.data)
+        stats = financial_stats(store=self.a)
+        self.assertEqual(stats['net_revenue'],0)
+        self.assertEqual(stats['cost_of_goods'],0)
+        self.assertEqual(stats['units_sold'],0)
+        self.assertEqual(stats['cash_total'],0)
+        self.assertEqual(stats['card_total'],0)
+        self.assertEqual(stats['net_profit'],-10)
+        second = self.client.post(f'/api/sales/{sale.pk}/return_items/',
+            {'items':[{'sale_item':sale.items.get().pk,'quantity':1}]}, format='json')
+        self.assertEqual(second.status_code,400)
+
+    def test_duplicate_return_lines_roll_back(self):
+        sale=self.sales[0]
+        row={'sale_item':sale.items.get().pk,'quantity':1}
+        response=self.client.post(f'/api/sales/{sale.pk}/return_items/',{'items':[row,row]},format='json')
+        self.assertEqual(response.status_code,400)
+        self.assertEqual(sale.returns.count(),0)
+
+    def test_foreign_stock_receipt_and_adjustment_are_rejected(self):
+        response=self.client.post('/api/inventory/receipts/',{'items':[{'product_variant':self.variants[1].pk,'quantity':2,'cost_price':'10'}]},format='json')
+        self.assertEqual(response.status_code,400)
+        response=self.client.post('/api/inventory/movements/adjust/',{'product_variant':self.variants[1].pk,'quantity':4},format='json')
+        self.assertEqual(response.status_code,400)
+
+    def test_simple_product_and_stock_movement(self):
+        response=self.client.post('/api/products/',{'name':'Ремень','barcode':'belt','base_selling_price':'900',
+            'variants':[{'color':None,'size':None,'stock_quantity':12}]},format='json')
+        self.assertEqual(response.status_code,201,response.data)
+        product=Product.objects.get(pk=response.data['id'])
+        self.assertEqual(product.total_stock,12)
+        self.assertEqual(product.variants.get().movements.get().quantity_change,12)
+
+    def test_failed_nested_product_creation_is_atomic(self):
+        foreign=self.products[1]
+        response=self.client.post('/api/products/',{'name':'Broken','base_selling_price':'100',
+            'variants':[{'id':foreign.variants.get().pk,'color':None,'size':None,'stock_quantity':1}]},format='json')
+        self.assertEqual(response.status_code,400)
+        self.assertFalse(Product.objects.filter(name='Broken').exists())
+
+    def test_manager_cannot_receive_cost_via_receipts_or_exports(self):
+        manager=self.user('ma','manager',self.a,'9988')
+        receipt=self.client.post('/api/inventory/receipts/',{'items':[{'product_variant':self.variants[0].pk,'quantity':1,'cost_price':'40'}]},format='json')
+        self.assertEqual(receipt.status_code,201)
+        self.client.force_authenticate(manager)
+        response=self.client.get('/api/inventory/receipts/')
+        self.assertNotIn('total_cost',response.data['results'][0])
+        self.assertNotIn('cost_price',response.data['results'][0]['items'][0])
+        self.assertEqual(self.client.get('/api/reports/receipts/').status_code,403)
+        dashboard=self.client.get('/api/sales/dashboard/',{'period':'today'})
+        self.assertIsNone(dashboard.data['financial'])
+
+    def test_chart_and_date_range_use_same_store(self):
+        response=self.client.get('/api/sales/dashboard/',{'period':'today'})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(len(response.data['chart']),24)
+        self.assertEqual(sum(p['revenue'] for p in response.data['chart']),100)
+        self.assertEqual(self.client.get('/api/sales/dashboard/',{'period':'custom','date_from':'2026-10-02','date_to':'2026-10-01'}).status_code,400)
+
+    def test_receipt_uses_store_settings(self):
+        self.a.receipt_footer='NewMax thank you'
+        self.a.save()
+        data=self.client.get(f'/api/sales/{self.sales[0].pk}/receipt_data/').data
+        self.assertEqual(data['business_name'],'NewMax')
+        self.assertEqual(data['receipt_footer'],'NewMax thank you')
+        pdf=self.client.get(f'/api/sales/{self.sales[0].pk}/receipt_pdf/')
+        self.assertEqual(pdf.status_code,200)
+        self.assertTrue(pdf.content.startswith(b'%PDF'))
+
+    def test_cross_store_write_and_owner_privilege_changes_denied(self):
+        self.assertEqual(self.client.patch(f'/api/products/{self.products[1].pk}/',{'name':'attack'},format='json').status_code,404)
+        self.assertEqual(self.client.delete(f'/api/finance/{self.entries[1].pk}/').status_code,404)
+        self.assertEqual(self.client.patch(f'/api/auth/users/{self.cashier.pk}/',{'role':'platform_admin'},format='json').status_code,400)
+        self.assertEqual(self.client.patch(f'/api/auth/users/{self.owner_a.pk}/',{'role':'cashier'},format='json').status_code,403)
+
     def test_database_requires_store_for_normal_user(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
             User.objects.create(username='unscoped', role='cashier')

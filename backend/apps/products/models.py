@@ -170,7 +170,7 @@ class ProductVariant(StoreOwned):
 
     @property
     def effective_price(self):
-        return self.selling_price if self.selling_price else self.product.base_selling_price
+        return self.selling_price if self.selling_price is not None else self.product.base_selling_price
 
     @property
     def effective_cost(self):

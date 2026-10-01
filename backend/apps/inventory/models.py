@@ -41,9 +41,8 @@ class StockReceipt(StoreOwned):
         return f'Поступление №{self.number}'
 
     @classmethod
-    def next_number(cls):
-        last = cls.objects.aggregate(models.Max('number'))['number__max'] or 0
-        return last + 1
+    def next_number(cls, *, store):
+        return store.next_number('receipt')
 
     def recalculate_totals(self):
         agg = self.items.aggregate(

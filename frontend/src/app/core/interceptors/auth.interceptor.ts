@@ -5,6 +5,7 @@ import { environment } from '../../../environments/environment';
 import { AuthService } from '../services/auth.service';
 
 interface RefreshResponse {
+  refresh?: string;
   access: string;
 }
 
@@ -38,6 +39,7 @@ export const authInterceptor: HttpInterceptorFn = (
       ).pipe(
         switchMap(res => {
           auth.updateAccessToken(res.access);
+          if(res.refresh) auth.updateRefreshToken(res.refresh);
           return next(req.clone({ setHeaders: { Authorization: `Bearer ${res.access}` } }));
         }),
         catchError(refreshError => {

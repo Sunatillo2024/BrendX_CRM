@@ -9,7 +9,7 @@ export const roleGuard = (route: ActivatedRouteSnapshot) => {
 
   if (!auth.isLoggedIn()) return router.createUrlTree(['/auth']);
   if (requiredRoles.length && !auth.hasRole(requiredRoles)) {
-    return router.createUrlTree(['/dashboard']);
+    return router.createUrlTree([auth.role() === 'platform_admin' ? '/platform' : '/dashboard']);
   }
   return true;
 };

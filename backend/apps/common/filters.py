@@ -35,11 +35,15 @@ def resolve_period(params):
     if period == PERIOD_ALL:
         return None, None
 
-    start = parse_date(params.get('date_from') or '') 
-    end = parse_date(params.get('date_to') or '')
+    from rest_framework.exceptions import ValidationError
+    try:
+        start = parse_date(params.get('date_from') or '')
+        end = parse_date(params.get('date_to') or '')
+    except ValueError:
+        raise ValidationError('Invalid date range.')
     if period == PERIOD_CUSTOM or start or end:
         from rest_framework.exceptions import ValidationError
-        if params.get('date_from') and not start or params.get('date_to') and not end:
+        if (params.get('date_from') and not start) or (params.get('date_to') and not end):
             raise ValidationError('Invalid date range.')
         if start and end and (start > end or (end-start).days > 3660):
             raise ValidationError('Invalid or excessively long date range.')

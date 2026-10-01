@@ -1,5 +1,6 @@
 from decimal import Decimal
-from django.db import transaction
+from django.db import transaction, models
+from django.db.models import Sum
 from rest_framework.exceptions import ValidationError
 from apps.inventory.services import return_stock
 from .models import Sale, SaleReturn, SaleReturnItem
@@ -24,23 +25,32 @@ def process_return(sale, data, user):
     amount = Decimal('0')
     # Allocate sale-wide discount/tax proportionally to original net line totals.
     line_sum = sum(item.total_price for item in items.values())
+    paid_lines = {}
+    remaining_paid = sale.total_amount
+    ordered_items = list(items.values())
+    for index, item in enumerate(ordered_items):
+        paid = ((sale.total_amount * item.total_price / line_sum).quantize(CENT)
+                if line_sum else Decimal('0'))
+        if index == len(ordered_items) - 1:
+            paid = remaining_paid
+        paid_lines[item.pk] = paid
+        remaining_paid -= paid
     for row in data['items']:
         item = items[row['sale_item']]
-        paid_line = (sale.total_amount * item.total_price / line_sum) if line_sum else Decimal('0')
+        paid_line = paid_lines[item.pk]
         before = (paid_line * item.returned_quantity / item.quantity).quantize(CENT)
         after = (paid_line * (item.returned_quantity + row['quantity']) / item.quantity).quantize(CENT)
         refund = after - before
         entry = SaleReturnItem(sale_return=document, sale_item=item, quantity=row['quantity'],
                               unit_price=(refund / row['quantity']).quantize(CENT), total_price=refund)
         # Preserve the exact allocated cents instead of recomputing rounded unit × qty.
-        from django.db import models
         models.Model.save(entry)
         item.returned_quantity += row['quantity']
         item.save(update_fields=['returned_quantity'])
         return_stock(item.product_variant, row['quantity'], sale=sale, user=user,
                      notes=data.get('notes', ''))
         amount += refund
-    previous = sale.returns.exclude(pk=document.pk).aggregate(total=__import__('django.db.models', fromlist=['Sum']).Sum('total_amount'))['total'] or Decimal('0')
+    previous = sale.returns.exclude(pk=document.pk).aggregate(total=Sum('total_amount'))['total'] or Decimal('0')
     amount = min(amount, max(Decimal('0'), sale.total_amount - previous))
     cash_before = (previous * sale.cash_amount / sale.total_amount).quantize(CENT) if sale.total_amount else Decimal('0')
     cash_after = ((previous + amount) * sale.cash_amount / sale.total_amount).quantize(CENT) if sale.total_amount else Decimal('0')

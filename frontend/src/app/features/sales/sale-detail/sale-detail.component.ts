@@ -220,7 +220,8 @@ export class SaleDetailComponent implements OnInit {
   }
 
   printReceipt(id: number) {
-    window.open(this.api.getReceiptPdfUrl(id, this.i18n.lang()), '_blank');
+    const tab = window.open('', '_blank');
+    this.api.getReceiptPdf(id,this.i18n.lang()).subscribe({next:blob=>{const url=URL.createObjectURL(blob);if(tab)tab.location.href=url;setTimeout(()=>URL.revokeObjectURL(url),60000);},error:()=>{tab?.close();this.toast.error(this.i18n.t('common.error'));}});
   }
 
   submitReturn(saleId: number) {

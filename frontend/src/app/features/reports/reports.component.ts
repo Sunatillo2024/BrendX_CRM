@@ -77,7 +77,7 @@ interface ExportKind { key: string; label: string; roles: string[]; }
           </div>
         }
 
-        @if (s.top_products?.length) {
+        @if (s.top_products.length) {
           <div class="card" style="margin-top:16px">
             <h3 class="card-title">{{ 'dashboard.topProducts' | t }}</h3>
             <table class="data">

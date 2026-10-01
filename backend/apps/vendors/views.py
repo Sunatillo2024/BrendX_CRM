@@ -1,5 +1,6 @@
 """Vendors Views - Vendor CRUD and financial transaction management"""
 from django.db import transaction
+from decimal import Decimal, InvalidOperation
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -21,7 +22,7 @@ class VendorViewSet(TenantViewMixin, viewsets.ModelViewSet):
         return VendorSerializer
 
     def get_permissions(self):
-        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+        if self.action in ['create', 'update', 'partial_update', 'destroy', 'pay', 'statement']:
             return [IsAdminOrManager()]
         return [IsAuthenticatedWithRole()]
 
@@ -41,11 +42,14 @@ class VendorViewSet(TenantViewMixin, viewsets.ModelViewSet):
     def pay(self, request, pk=None):
         """Record a payment made to a vendor (reduces our debt)."""
         vendor = self.get_object()
-        amount = request.data.get('amount')
-        if not amount or float(amount) <= 0:
+        try:
+            amount = Decimal(str(request.data.get('amount', '0')))
+        except (InvalidOperation, ValueError):
+            amount = Decimal('0')
+        if not amount.is_finite() or amount <= 0:
             return Response({'detail': 'Valid amount required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        amount = abs(float(amount))
+        vendor = Vendor.objects.select_for_update().get(pk=vendor.pk, store=request.user.store)
         vendor.balance -= amount
         vendor.save()
 
@@ -64,6 +68,7 @@ class VendorViewSet(TenantViewMixin, viewsets.ModelViewSet):
 class VendorTransactionViewSet(TenantViewMixin, viewsets.ModelViewSet):
     queryset = VendorTransaction.objects.select_related('vendor', 'created_by').order_by('-date')
     serializer_class = VendorTransactionSerializer
+    http_method_names = ['get', 'post', 'head', 'options']
     filterset_fields = ['vendor', 'transaction_type']
     search_fields = ['vendor__name', 'reference']
 
@@ -72,7 +77,7 @@ class VendorTransactionViewSet(TenantViewMixin, viewsets.ModelViewSet):
 
     @transaction.atomic
     def perform_create(self, serializer):
-        vendor = serializer.validated_data['vendor']
+        vendor = Vendor.objects.select_for_update().get(pk=serializer.validated_data['vendor'].pk, store=self.request.user.store)
         t_type = serializer.validated_data['transaction_type']
         amount = serializer.validated_data['amount']
 

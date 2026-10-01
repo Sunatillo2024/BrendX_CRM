@@ -656,7 +656,8 @@ export class PosComponent implements OnInit {
   }
 
   printReceipt(saleId: number) {
-    window.open(this.api.getReceiptPdfUrl(saleId, this.i18n.lang()), '_blank');
+    const tab = window.open('', '_blank');
+    this.api.getReceiptPdf(saleId,this.i18n.lang()).subscribe({next:blob=>{const url=URL.createObjectURL(blob);if(tab)tab.location.href=url;setTimeout(()=>URL.revokeObjectURL(url),60000);},error:()=>{tab?.close();this.toast.error(this.i18n.t('common.error'));}});
   }
 
   clearCart() {

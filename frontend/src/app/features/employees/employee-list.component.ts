@@ -193,7 +193,7 @@ export class EmployeeListComponent implements OnInit {
   private confirm = inject(ConfirmService);
   private i18n = inject(TranslationService);
 
-  readonly roles: UserRole[] = ['owner', 'manager', 'cashier'];
+  readonly roles: UserRole[] = ['manager', 'cashier'];
 
   employees = signal<User[]>([]);
   showForm = signal(false);

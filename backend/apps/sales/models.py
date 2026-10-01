@@ -107,9 +107,8 @@ class Sale(StoreOwned):
         return sum(item.quantity for item in self.items.all())
 
     @classmethod
-    def next_number(cls):
-        last = cls.objects.order_by('-number').values_list('number', flat=True).first()
-        return (last or 0) + 1
+    def next_number(cls, *, store):
+        return store.next_number('sale')
 
 
 class SaleItem(models.Model):

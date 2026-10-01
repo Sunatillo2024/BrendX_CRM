@@ -1,5 +1,6 @@
 """Authentication Views - PIN login, employee management."""
 from django.conf import settings
+from django.db import transaction
 from django.contrib.auth import update_session_auth_hash
 from django.utils import timezone
 from rest_framework import generics, status, viewsets
@@ -159,6 +160,12 @@ class UserViewSet(TenantViewMixin, viewsets.ModelViewSet):
             return [IsOwner()]
         return [IsAuthenticated()]
 
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        from apps.stores.models import Store
+        Store.objects.select_for_update().get(pk=active_store(request.user).pk)
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         user = serializer.save(store=active_store(self.request.user), is_staff=False, is_superuser=False)
         log_action(AuditLog.ACTION_USER_CREATED, user=self.request.user, entity='user',
@@ -182,6 +189,9 @@ class UserViewSet(TenantViewMixin, viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         # Never hard-delete an employee: deactivate to keep sales history intact.
+        if instance.role == 'owner':
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Owner deactivation is managed by the platform.')
         instance.is_active = False
         instance.save(update_fields=['is_active', 'updated_at'])
         log_action(AuditLog.ACTION_USER_DEACTIVATED, user=self.request.user, entity='user',

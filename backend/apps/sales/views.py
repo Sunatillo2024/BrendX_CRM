@@ -217,6 +217,9 @@ class SaleViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
             'sale': SaleSerializer(sale, context={'request': request}).data,
             'business_name': sale.store.name,
             'currency': sale.store.currency_symbol,
+            'address': sale.store.address,
+            'receipt_header': sale.store.receipt_header,
+            'receipt_footer': sale.store.receipt_footer,
         })
 
     @action(detail=True, methods=['get'])
@@ -243,19 +246,35 @@ class SaleViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
             rightMargin=0.45 * cm, leftMargin=0.45 * cm,
             topMargin=0.5 * cm, bottomMargin=0.5 * cm,
         )
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from xml.sax.saxutils import escape
+        from pathlib import Path
+        import reportlab
+        font_dir = Path(reportlab.__file__).parent / 'fonts'
+        if 'ReceiptFont' not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont('ReceiptFont', str(font_dir / 'Vera.ttf')))
+            pdfmetrics.registerFont(TTFont('ReceiptBold', str(font_dir / 'VeraBd.ttf')))
+            pdfmetrics.registerFontFamily('ReceiptFont', normal='ReceiptFont', bold='ReceiptBold')
         styles = getSampleStyleSheet()
+        styles['Normal'].fontName = 'ReceiptFont'
+        styles['Title'].fontName = 'ReceiptBold'
         small = ParagraphStyle('small', parent=styles['Normal'], fontSize=7.5, leading=9.5)
         centre = ParagraphStyle('centre', parent=small, alignment=1)
-        bold = ParagraphStyle('bold', parent=small, fontName='Helvetica-Bold')
+        bold = ParagraphStyle('bold', parent=small, fontName='ReceiptBold')
 
         story = [
-            Paragraph(f"<b>{sale.store.name}</b>",
+            Paragraph(f"<b>{escape(sale.store.name)}</b>",
                       ParagraphStyle('h', parent=styles['Title'], fontSize=12, alignment=1)),
             Paragraph(f"{labels['receipt']} №{sale.sale_number}", centre),
             Spacer(1, 0.15 * cm),
             Paragraph(f"{labels['date']}: {timezone.localtime(sale.created_at):%d.%m.%Y %H:%M}", small),
             Paragraph(f"{labels['cashier']}: {sale.cashier.display_name}", small),
         ]
+        if sale.store.address:
+            story.append(Paragraph(escape(sale.store.address), centre))
+        if sale.store.receipt_header:
+            story.append(Paragraph(escape(sale.store.receipt_header), centre))
         if sale.customer:
             story.append(Paragraph(f"{labels['customer']}: {sale.customer.name}", small))
         story.append(Spacer(1, 0.2 * cm))
@@ -264,11 +283,12 @@ class SaleViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
         for item in sale.items.all():
             variant = ' / '.join(p for p in [item.color_name, item.size_name] if p)
             name = item.product_name if not variant else f'{item.product_name} ({variant})'
-            rows.append([Paragraph(name, small), str(item.quantity),
+            rows.append([Paragraph(escape(name), small), str(item.quantity),
                          f'{item.total_price:.0f}'])
 
         table = Table(rows, colWidths=[4.3 * cm, 1.2 * cm, 1.6 * cm])
         table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'ReceiptFont'),
             ('FONTSIZE', (0, 0), (-1, -1), 7.5),
             ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
             ('LINEBELOW', (0, 0), (-1, 0), 0.4, colors.black),
@@ -283,14 +303,14 @@ class SaleViewSet(TenantViewMixin, DateRangeFilterMixin, viewsets.ModelViewSet):
 
         if sale.discount_amount:
             story.append(line(labels['discount'], f'-{sale.discount_amount:.0f}'))
-        story.append(line(labels['total'], f'{sale.total_amount:.0f}', bold_=True))
+        story.append(line(labels['total'], f'{sale.total_amount:.2f} {escape(sale.store.currency_symbol)}', bold_=True))
         if sale.cash_amount:
             story.append(line(labels['cash'], f'{sale.cash_amount:.0f}'))
         if sale.card_amount:
             story.append(line(labels['card'], f'{sale.card_amount:.0f}'))
         if sale.change_amount:
             story.append(line(labels['change'], f'{sale.change_amount:.0f}'))
-        story += [Spacer(1, 0.35 * cm), Paragraph(labels['thanks'], centre)]
+        story += [Spacer(1, 0.35 * cm), Paragraph(escape(sale.store.receipt_footer or labels['thanks']), centre)]
 
         doc.build(story)
         buffer.seek(0)

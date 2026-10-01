@@ -19,6 +19,14 @@ class CostMaskingMixin(OwnerOnlyFieldsMixin):
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    def validate_name(self, value):
+        qs = Category.objects.filter(store=active_store(self.context['request'].user), name=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError('Category already exists in this store.')
+        return value
+
     product_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
@@ -31,12 +39,32 @@ class CategorySerializer(serializers.ModelSerializer):
 
 
 class ColorSerializer(serializers.ModelSerializer):
+    def validate_name(self, value):
+        if self.context.get('request'):
+            qs = Color.objects.filter(store=active_store(self.context['request'].user), name=value)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError('Color already exists in this store.')
+        return value
+
     class Meta:
         model = Color
         fields = ['id', 'name', 'hex_code']
 
 
 class SizeSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        if self.context.get('request'):
+            name = attrs.get('name', getattr(self.instance, 'name', None))
+            kind = attrs.get('size_type', getattr(self.instance, 'size_type', None))
+            qs = Size.objects.filter(store=active_store(self.context['request'].user), name=name, size_type=kind)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError('Size already exists in this store.')
+        return attrs
+
     class Meta:
         model = Size
         fields = ['id', 'name', 'size_type', 'display_order']

@@ -76,6 +76,8 @@ export class AuthService {
   }
 
   /** Called by the auth interceptor after a successful token refresh. */
+  updateRefreshToken(refresh: string) { localStorage.setItem(this.REFRESH_KEY, refresh); }
+
   updateAccessToken(access: string) {
     localStorage.setItem(this.TOKEN_KEY, access);
   }

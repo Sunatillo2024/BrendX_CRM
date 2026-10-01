@@ -1,7 +1,7 @@
 """Audit Views - read-only trail, owner only."""
 from rest_framework import viewsets
 
-from apps.authentication.permissions import IsOwnerOrManager
+from apps.authentication.permissions import IsOwner
 
 from apps.common.tenancy import TenantViewMixin
 from .models import AuditLog
@@ -19,4 +19,4 @@ class AuditLogViewSet(TenantViewMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = AuditLogSerializer
     filterset_fields = ['action', 'entity', 'username']
     search_fields = ['username', 'entity', 'entity_id']
-    permission_classes = [IsOwnerOrManager]
+    permission_classes = [IsOwner]
